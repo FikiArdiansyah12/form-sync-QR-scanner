@@ -19,19 +19,52 @@ import { validateTicketForEvent, validateTicketForSession } from "./securityLock
 
 const STORAGE_PREFIX = "formsync_event_";
 const ACTIVE_EVENT_KEY = "formsync_current_active_event_code";
+const WEBHOOK_REGISTRY_KEY = "formsync_webhook_registry";
+
+/**
+ * Menyimpan pemetaan Event Code ke Google Apps Script Webhook URL secara persisten.
+ */
+export function saveWebhookMapping(eventCode: string, webhookUrl: string): void {
+  if (!eventCode || !webhookUrl || typeof window === "undefined") return;
+  const cleanCode = normalizeEventCode(eventCode);
+  const cleanUrl = webhookUrl.trim();
+  try {
+    const raw = localStorage.getItem(WEBHOOK_REGISTRY_KEY);
+    const registry: Record<string, string> = raw ? JSON.parse(raw) : {};
+    registry[cleanCode] = cleanUrl;
+    localStorage.setItem(WEBHOOK_REGISTRY_KEY, JSON.stringify(registry));
+  } catch {}
+}
+
+/**
+ * Mengambil Webhook URL yang telah ter-pairing dengan Event Code tertentu.
+ */
+export function getWebhookForEvent(eventCode: string): string | null {
+  if (!eventCode || typeof window === "undefined") return null;
+  const cleanCode = normalizeEventCode(eventCode);
+  try {
+    const raw = localStorage.getItem(WEBHOOK_REGISTRY_KEY);
+    if (!raw) return null;
+    const registry: Record<string, string> = JSON.parse(raw);
+    return registry[cleanCode] || null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Konfigurasi awal acara murni bersih tanpa data dummy dan tanpa checkpoint default.
  * Seluruh checkpoint dan peserta dikonfigurasi secara kustom dan fleksibel oleh pengguna.
  */
 export const DEFAULT_DEMO_EVENT: WorkspaceEventConfig = {
-  eventCode: "FS9K-7M2P",
+  eventCode: "",
   eventName: "Attendance Workspace",
   eventDate: new Date().toISOString().split("T")[0],
   location: "Main Gate",
   isActive: true,
   isLocked: false,
   securitySecret: "workspace-auth-secret",
+  pin: "", // Default open access, koordinator bisa menyetel 4-8 digit PIN opsional
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
   sessions: [], // Murni kosong: Tidak ada checkpoint default bawaan
@@ -47,24 +80,83 @@ function getStorageKey(eventCode: string): string {
 }
 
 /**
- * Memuat konfigurasi acara dari localStorage berdasarkan kode 8-digit.
- * Otomatis mendeteksi dan membersihkan residu data dummy lama agar state selalu murni.
+ * Memeriksa apakah suatu kode acara telah terdaftar di sistem lokal.
  *
  * @param eventCode - Kode acara 8-digit
- * @returns Konfigurasi acara jika ditemukan, atau null jika belum ada
+ * @returns boolean
+ */
+export function isEventWorkspaceExists(eventCode: string): boolean {
+  if (!eventCode || !eventCode.trim() || typeof window === "undefined") return false;
+  const key = getStorageKey(eventCode);
+  return Boolean(localStorage.getItem(key));
+}
+
+/**
+ * Mendaftarkan ruang kerja acara baru secara sah dari Google Sheets Add-on.
+ * Hanya dipanggil saat tautan resmi dibuka dari Add-on Sheets atau sinkronisasi valid.
+ *
+ * @param eventCode - Kode acara 8-digit
+ * @param options - Konfigurasi tambahan opsional
+ */
+export function registerWorkspaceEvent(
+  eventCode: string,
+  options?: {
+    origin?: string;
+    eventName?: string;
+    securitySecret?: string;
+    pin?: string;
+  }
+): WorkspaceEventConfig {
+  const clean = normalizeEventCode(eventCode);
+  const formatted = eventCode.includes("-")
+    ? eventCode.toUpperCase()
+    : `${clean.slice(0, 4)}-${clean.slice(4, 8)}`;
+
+  const newEvent: WorkspaceEventConfig = {
+    eventCode: formatted,
+    eventName: options?.eventName || "Attendance Workspace",
+    eventDate: new Date().toISOString().split("T")[0],
+    location: "Main Gate",
+    isActive: true,
+    isLocked: false,
+    securitySecret: options?.securitySecret || `fs_sec_${Math.random().toString(36).substring(2, 12)}`,
+    pin: options?.pin || "",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    sessions: [],
+    activeSessionId: "",
+    attendees: [],
+  };
+  saveEventToStorage(newEvent);
+  return newEvent;
+}
+
+/**
+ * Backward-compatible helper untuk membuat workspace event.
+ */
+export function createEmptyWorkspaceEvent(
+  eventCode: string,
+  eventName?: string
+): WorkspaceEventConfig {
+  return registerWorkspaceEvent(eventCode, { eventName });
+}
+
+/**
+ * Memuat konfigurasi acara dari localStorage berdasarkan kode 8-digit.
+ * Mengembalikan NULL jika kode acara tidak ditemukan (tidak terdaftar).
+ *
+ * @param eventCode - Kode acara 8-digit
+ * @returns Konfigurasi acara jika ditemukan, atau null jika belum terdaftar
  */
 export function loadEventFromStorage(
   eventCode: string
 ): WorkspaceEventConfig | null {
-  if (!eventCode || typeof window === "undefined") return null;
+  if (!eventCode || !eventCode.trim() || typeof window === "undefined") return null;
   const key = getStorageKey(eventCode);
   try {
     const raw = localStorage.getItem(key);
     if (!raw) {
-      if (normalizeEventCode(eventCode) === normalizeEventCode(DEFAULT_DEMO_EVENT.eventCode)) {
-        saveEventToStorage(DEFAULT_DEMO_EVENT);
-        return DEFAULT_DEMO_EVENT;
-      }
+      // KETAT: Jika tidak ada di penyimpanan resmi, TOLAK (return null)
       return null;
     }
     const parsed = JSON.parse(raw) as WorkspaceEventConfig;
@@ -93,6 +185,10 @@ export function loadEventFromStorage(
 
     parsed.sessions = parsed.sessions || [];
     parsed.attendees = parsed.attendees || [];
+    if (!parsed.spreadsheetWebhookUrl) {
+      const mappedWh = getWebhookForEvent(eventCode);
+      if (mappedWh) parsed.spreadsheetWebhookUrl = mappedWh;
+    }
     return parsed;
   } catch {
     return null;
@@ -116,6 +212,9 @@ export function saveEventToStorage(event: WorkspaceEventConfig): void {
     };
     localStorage.setItem(key, JSON.stringify(payload));
     localStorage.setItem(ACTIVE_EVENT_KEY, normalizeEventCode(event.eventCode));
+    if (event.spreadsheetWebhookUrl) {
+      saveWebhookMapping(event.eventCode, event.spreadsheetWebhookUrl);
+    }
   } catch (err) {
     console.error("Failed to persist event to localStorage:", err);
   }
@@ -123,14 +222,35 @@ export function saveEventToStorage(event: WorkspaceEventConfig): void {
 
 /**
  * Mengambil kode event terakhir yang aktif.
+ * Mengembalikan string kosong jika belum ada kode event yang sah dibuka.
  */
 export function getLastActiveEventCode(): string {
-  if (typeof window === "undefined") return DEFAULT_DEMO_EVENT.eventCode;
+  if (typeof window === "undefined") return "";
   try {
     const saved = localStorage.getItem(ACTIVE_EVENT_KEY);
-    if (saved) return saved;
+    if (saved && saved !== "FS9K-7M2P" && saved !== "FS9K7M2P") {
+      return saved;
+    }
   } catch {}
-  return DEFAULT_DEMO_EVENT.eventCode;
+  return "";
+}
+
+/**
+ * Memperbarui URL Webhook Google Apps Script pada konfigurasi acara.
+ *
+ * @param eventCode - Kode acara 8-digit
+ * @param webhookUrl - URL Webhook Google Apps Script
+ * @returns Konfigurasi acara terbarui atau null jika event tidak ditemukan
+ */
+export function updateSpreadsheetWebhookUrl(
+  eventCode: string,
+  webhookUrl: string
+): WorkspaceEventConfig | null {
+  const event = loadEventFromStorage(eventCode);
+  if (!event) return null;
+  event.spreadsheetWebhookUrl = webhookUrl.trim();
+  saveEventToStorage(event);
+  return event;
 }
 
 /**
@@ -539,4 +659,26 @@ export function matchesAttendeeSearch(attendee: Attendee, query: string): boolea
     (attendee.organization ? attendee.organization.toLowerCase().includes(q) : false) ||
     (attendee.email ? attendee.email.toLowerCase().includes(q) : false)
   );
+}
+
+/**
+ * Memperbarui PIN keamanan operator pada acara tertentu.
+ *
+ * @param eventCode - Kode acara 8-digit
+ * @param pin - PIN baru (kosongkan jika open access)
+ * @returns Konfigurasi acara terbaru atau null jika event tidak ditemukan
+ */
+export function updateEventPin(
+  eventCode: string,
+  pin: string
+): WorkspaceEventConfig | null {
+  const event = loadEventFromStorage(eventCode);
+  if (!event) return null;
+  const updated: WorkspaceEventConfig = {
+    ...event,
+    pin: (pin || "").trim(),
+    updatedAt: new Date().toISOString(),
+  };
+  saveEventToStorage(updated);
+  return updated;
 }

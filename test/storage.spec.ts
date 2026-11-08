@@ -1,15 +1,49 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, beforeAll } from "vitest";
 import {
   calculateAttendanceStats,
   processCheckIn,
   revertCheckIn,
   toggleEventStatus,
   exportAttendeesToCsv,
+  saveWebhookMapping,
+  getWebhookForEvent,
 } from "../src/core/storage";
 import { type WorkspaceEventConfig, type Attendee } from "../src/core/types";
 
+function createMemoryStorage(): Storage {
+  let store: Record<string, string> = {};
+  return {
+    getItem: (key: string) => store[key] ?? null,
+    setItem: (key: string, value: string) => {
+      store[key] = String(value);
+    },
+    removeItem: (key: string) => {
+      delete store[key];
+    },
+    clear: () => {
+      store = {};
+    },
+    key: (index: number) => Object.keys(store)[index] ?? null,
+    get length() {
+      return Object.keys(store).length;
+    },
+  };
+}
+
 describe("storage (Attendance Metrics & Check-In Silo)", () => {
   let testEvent: WorkspaceEventConfig;
+  const memLocal = createMemoryStorage();
+
+  beforeAll(() => {
+    Object.defineProperty(globalThis, "window", {
+      value: { localStorage: memLocal },
+      writable: true,
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+      value: memLocal,
+      writable: true,
+    });
+  });
 
   const mockAttendees: Attendee[] = [
     {
@@ -132,5 +166,21 @@ describe("storage (Attendance Metrics & Check-In Silo)", () => {
     expect(csv).toContain("Budi Santoso");
     expect(csv).toContain("PT Teknologi Nusantara");
     expect(csv).toContain("present");
+  });
+
+  it("harus dapat menyimpan dan mengambil pemetaan persistent Webhook URL untuk event tertentu", () => {
+    const dummyCode = "ABCD-1234";
+    const dummyWebhook = "https://script.google.com/macros/s/AKfycb_sample/exec";
+
+    saveWebhookMapping(dummyCode, dummyWebhook);
+    const retrieved = getWebhookForEvent(dummyCode);
+    expect(retrieved).toBe(dummyWebhook);
+
+    // Harus tahan terhadap format tanpa tanda strip
+    const retrievedWithoutHyphen = getWebhookForEvent("ABCD1234");
+    expect(retrievedWithoutHyphen).toBe(dummyWebhook);
+
+    // Event yang belum pernah dipetakan harus mengembalikan null
+    expect(getWebhookForEvent("NONEXISTENT")).toBeNull();
   });
 });

@@ -1,0 +1,460 @@
+import React, { useState, useEffect } from "react";
+import {
+  ArrowRight,
+  QrCode,
+  ShieldCheck,
+  History,
+  Lock,
+  ArrowLeft,
+  KeyRound,
+  Eye,
+  EyeOff,
+  Link2,
+} from "lucide-react";
+import { PortalHeader } from "../components/PortalHeader";
+import { validateEventCodeFormat } from "../core/eventCodeGenerator";
+import {
+  isEventWorkspaceExists,
+  loadEventFromStorage,
+  getWebhookForEvent,
+  saveWebhookMapping,
+  registerWorkspaceEvent,
+  saveEventToStorage,
+} from "../core/storage";
+import { isEventPinProtected, setEventUnlockedInSession } from "../core/securityLock";
+import { fetchEventFromSpreadsheet, testSpreadsheetConnectivity } from "../bridge/spreadsheetSync";
+
+export interface ConnectResult {
+  success: boolean;
+  error?: string;
+}
+
+export interface ConnectEventScreenProps {
+  onConnectEvent: (eventCode: string) => ConnectResult;
+  onRegisterFromSpreadsheet?: (webhookUrl: string, eventCode: string) => Promise<ConnectResult>;
+  initialError?: string | null;
+}
+
+const RECENT_EVENTS_STORAGE_KEY = "formsync_recent_events_history";
+
+/**
+ * ConnectEventScreen
+ * Layar tunggal terpadu untuk menghubungkan ruang kerja acara.
+ * Alur terpadu tanpa tab ganda yang membingungkan:
+ * 1. Masukkan Event Code -> Langsung verifikasi & fetch ke backend
+ * 2. Jika event ber-PIN -> Tampilkan form input Security PIN
+ * 3. Jika event valid & PIN cocok -> Masuk ke Gate Scanner
+ */
+export const ConnectEventScreen: React.FC<ConnectEventScreenProps> = ({
+  onConnectEvent,
+  onRegisterFromSpreadsheet,
+  initialError,
+}) => {
+  // Mode tampilan: "code" (masukkan event code) atau "pin" (verifikasi PIN)
+  const [stage, setStage] = useState<"code" | "pin">("code");
+  const [codeInput, setCodeInput] = useState("");
+  const [pinInput, setPinInput] = useState("");
+  const [showPin, setShowPin] = useState(false);
+  const [error, setError] = useState<string | null>(initialError || null);
+  const [recentCodes, setRecentCodes] = useState<string[]>([]);
+  const [isVerifying, setIsVerifying] = useState(false);
+
+  // Opsi webhook manual (collapsible) jika perangkat belum pernah membuka link scanner
+  const [showCustomWebhook, setShowCustomWebhook] = useState(false);
+  const [customWebhookUrl, setCustomWebhookUrl] = useState("");
+
+  // Menyimpan data event sementara yang sedang diverifikasi PIN-nya
+  const [pendingEventCode, setPendingEventCode] = useState<string>("");
+  const [pendingExpectedPin, setPendingExpectedPin] = useState<string>("");
+
+  useEffect(() => {
+    if (initialError) {
+      setError(initialError);
+    }
+  }, [initialError]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const raw = localStorage.getItem(RECENT_EVENTS_STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            setRecentCodes(parsed.filter((c) => typeof c === "string" && c !== "FS9K-7M2P"));
+          }
+        }
+      } catch {}
+    }
+  }, []);
+
+  const handleFormatInput = (val: string) => {
+    const raw = val.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    if (raw.length <= 4) {
+      setCodeInput(raw);
+    } else {
+      setCodeInput(`${raw.slice(0, 4)}-${raw.slice(4, 8)}`);
+    }
+    if (error) setError(null);
+  };
+
+  /**
+   * Tahap 1: Verifikasi Event Code & Fetch ke Backend
+   */
+  const handleProceedCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const formatted = codeInput.trim().toUpperCase();
+    if (!validateEventCodeFormat(formatted)) {
+      setError("Please enter a valid 8-digit code format: XXXX-YYYY");
+      return;
+    }
+    setError(null);
+    setIsVerifying(true);
+
+    try {
+      // 1. Cek apakah ada Webhook URL tersimpan di persistent registry
+      let webhookUrl = getWebhookForEvent(formatted);
+
+      // Jika user menginput custom webhook di menu collapsible
+      if (customWebhookUrl.trim()) {
+        webhookUrl = customWebhookUrl.trim();
+        saveWebhookMapping(formatted, webhookUrl);
+      }
+
+      // 2. Jika ada webhook URL, lakukan live fetch ke backend Google Sheets
+      if (webhookUrl) {
+        const fetchRes = await fetchEventFromSpreadsheet(webhookUrl, formatted);
+        if (fetchRes.success) {
+          // Event terverifikasi di backend Google Sheets
+          const remotePin = fetchRes.pin || "";
+          const hasPin = Boolean(fetchRes.hasPin || remotePin);
+
+          // Daftarkan/update event di local storage
+          let existing = loadEventFromStorage(formatted);
+          if (!existing) {
+            existing = registerWorkspaceEvent(formatted, {
+              origin: "sheets",
+              securitySecret: fetchRes.securitySecret,
+              pin: remotePin,
+            });
+          } else {
+            existing.pin = remotePin;
+            if (fetchRes.securitySecret) existing.securitySecret = fetchRes.securitySecret;
+          }
+          existing.spreadsheetWebhookUrl = webhookUrl;
+          if (fetchRes.attendees) existing.attendees = fetchRes.attendees;
+          saveEventToStorage(existing);
+
+          // Jika event terproteksi PIN, alihkan ke tahap input PIN
+          if (hasPin) {
+            setPendingEventCode(formatted);
+            setPendingExpectedPin(remotePin);
+            setStage("pin");
+            setPinInput("");
+            setIsVerifying(false);
+            return;
+          }
+
+          // Jika open access (tanpa PIN), langsung connect!
+          completeConnection(formatted);
+          return;
+        }
+      }
+
+      // 3. Fallback: Cek apakah event sudah pernah disimpan di localStorage lokal
+      const localEvent = loadEventFromStorage(formatted);
+      if (localEvent) {
+        if (isEventPinProtected(localEvent.pin)) {
+          setPendingEventCode(formatted);
+          setPendingExpectedPin(localEvent.pin);
+          setStage("pin");
+          setPinInput("");
+          setIsVerifying(false);
+          return;
+        }
+        completeConnection(formatted);
+        return;
+      }
+
+      // 4. Jika event tidak ditemukan di lokal dan belum ada webhook terhubung
+      setError(
+        `Event Code '${formatted}' is not paired yet. Open the scanner link from your FormSync Google Sheets add-on once to link it automatically, or enter your Apps Script Webhook below.`
+      );
+      setShowCustomWebhook(true);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Error verifying event workspace.";
+      setError(msg);
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  /**
+   * Tahap 2: Verifikasi Operator Security PIN
+   */
+  const handleVerifyPin = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanPin = pinInput.trim();
+    if (!cleanPin) {
+      setError("Please enter the Operator Security PIN.");
+      return;
+    }
+
+    if (pendingExpectedPin && cleanPin !== pendingExpectedPin) {
+      setError("Incorrect Security PIN. Please check the PIN set in your Google Sheet add-on.");
+      return;
+    }
+
+    // PIN Valid: Catat status unlock di sesi dan masuk ke workspace
+    setEventUnlockedInSession(pendingEventCode);
+    completeConnection(pendingEventCode);
+  };
+
+  const completeConnection = (code: string) => {
+    const res = onConnectEvent(code);
+    if (!res.success) {
+      setError(res.error || `Could not connect to event '${code}'.`);
+      setStage("code");
+      return;
+    }
+
+    // Simpan ke daftar riwayat yang baru dibuka
+    if (typeof window !== "undefined") {
+      try {
+        const nextList = [code, ...recentCodes.filter((c) => c !== code)].slice(0, 5);
+        localStorage.setItem(RECENT_EVENTS_STORAGE_KEY, JSON.stringify(nextList));
+      } catch {}
+    }
+  };
+
+  const handleSelectRecent = (code: string) => {
+    setError(null);
+    setCodeInput(code);
+    const local = loadEventFromStorage(code);
+    if (local && isEventPinProtected(local.pin)) {
+      setPendingEventCode(code);
+      setPendingExpectedPin(local.pin);
+      setStage("pin");
+      setPinInput("");
+    } else {
+      completeConnection(code);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-100/80 py-8 px-4 font-sans text-slate-900 selection:bg-slate-200 flex justify-center items-center">
+      <div className="w-full max-w-lg bg-white rounded-2xl sm:rounded-3xl border border-slate-200 shadow-xl overflow-hidden flex flex-col">
+        {/* Top Header Bar */}
+        <PortalHeader badgeText={stage === "pin" ? "Protected" : "Connect"} />
+
+        {/* Content Body */}
+        <div className="p-6 sm:p-8 space-y-6 bg-white">
+          {stage === "code" ? (
+            /* TAHAP 1: INPUT EVENT CODE */
+            <div className="space-y-6 animate-in fade-in duration-200">
+              <div className="text-center space-y-2">
+                <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-slate-50 border border-slate-200 text-slate-900 mb-1">
+                  <QrCode className="w-7 h-7" />
+                </div>
+                <h2 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
+                  Connect Event Workspace
+                </h2>
+                <p className="text-[13px] text-slate-500 max-w-sm mx-auto leading-relaxed">
+                  Enter the 8-digit Event Code from your Google Sheets FormSync add-on to access the gate scanner and attendance matrix.
+                </p>
+              </div>
+
+              <form onSubmit={handleProceedCode} className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-[13px] font-bold text-slate-700 uppercase tracking-wider block">
+                    8-Digit Event Code
+                  </label>
+
+                  <div className="relative">
+                    <input
+                      type="text"
+                      maxLength={9}
+                      value={codeInput}
+                      onChange={(e) => handleFormatInput(e.target.value)}
+                      placeholder="e.g. ABCD-1234"
+                      autoFocus
+                      className="w-full bg-slate-50/60 border border-slate-300 rounded-xl px-4 py-3.5 text-center text-xl text-slate-900 font-mono font-bold tracking-widest uppercase focus:bg-white focus:outline-none focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 transition-all placeholder:text-slate-300"
+                    />
+                  </div>
+
+                  {error && (
+                    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium leading-relaxed animate-in fade-in">
+                      {error}
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isVerifying}
+                  className="w-full py-3.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white text-[14px] font-bold shadow-sm transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-[0.99]"
+                >
+                  <span>{isVerifying ? "Verifying..." : "Connect Workspace"}</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </form>
+
+              {/* Opsi Opsional: Input Webhook Pertama Kali jika belum pairing */}
+              <div className="pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowCustomWebhook(!showCustomWebhook)}
+                  className="text-xs text-slate-500 hover:text-slate-800 font-medium inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <Link2 className="size-3.5 text-slate-400" />
+                  <span>
+                    {showCustomWebhook
+                      ? "Hide Advanced Webhook Pairing"
+                      : "First time on this device? Pair via Webhook URL"}
+                  </span>
+                </button>
+
+                {showCustomWebhook && (
+                  <div className="mt-2.5 p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2 animate-in fade-in">
+                    <label className="text-[11px] font-bold text-slate-700 uppercase tracking-wider block">
+                      Google Apps Script Webhook URL
+                    </label>
+                    <input
+                      type="url"
+                      value={customWebhookUrl}
+                      onChange={(e) => setCustomWebhookUrl(e.target.value)}
+                      placeholder="https://script.google.com/macros/s/.../exec"
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono text-slate-900 focus:outline-none focus:border-slate-800"
+                    />
+                    <p className="text-[11px] text-slate-500">
+                      Copy this from your Google Sheets FormSync add-on. Once entered, this device will remember the connection permanently.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Recent Workspaces Quick Links (Jika ada) */}
+              {recentCodes.length > 0 && (
+                <div className="pt-2 border-t border-slate-100 space-y-2.5">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-500">
+                    <History className="w-3.5 h-3.5" />
+                    <span>Recently Opened Workspaces</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {recentCodes.map((code) => (
+                      <button
+                        key={code}
+                        type="button"
+                        onClick={() => handleSelectRecent(code)}
+                        className="px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-mono font-bold text-slate-800 transition-colors cursor-pointer"
+                      >
+                        {code}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Help Callout */}
+              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 text-xs text-slate-600 leading-relaxed flex items-start gap-2.5">
+                <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-semibold text-slate-800 block">
+                    Where do I find my Event Code?
+                  </span>
+                  <span>
+                    Open your event spreadsheet, go to{" "}
+                    <strong className="text-slate-700">Extensions &gt; FormSync &gt; Attendance</strong>, and copy your assigned 8-digit code or scanner link.
+                  </span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* TAHAP 2: VERIFIKASI OPERATOR SECURITY PIN */
+            <div className="space-y-6 animate-in fade-in duration-200">
+              <div className="text-center space-y-2">
+                <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-amber-50 border border-amber-200 text-amber-600 mb-1">
+                  <Lock className="w-7 h-7" />
+                </div>
+                <h2 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
+                  Security PIN Required
+                </h2>
+                <p className="text-[13px] text-slate-600 max-w-sm mx-auto leading-relaxed">
+                  Workspace <strong className="font-mono text-slate-900 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">{pendingEventCode}</strong> is protected. Enter the 4–8 digit PIN configured in your Google Sheet add-on.
+                </p>
+              </div>
+
+              <form onSubmit={handleVerifyPin} className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-[13px] font-bold text-slate-700 uppercase tracking-wider block">
+                    Operator Security PIN
+                  </label>
+
+                  <div className="relative">
+                    <input
+                      type={showPin ? "text" : "password"}
+                      maxLength={12}
+                      value={pinInput}
+                      onChange={(e) => {
+                        setPinInput(e.target.value);
+                        if (error) setError(null);
+                      }}
+                      placeholder="Enter 4-8 digit PIN"
+                      autoFocus
+                      className="w-full bg-slate-50/60 border border-slate-300 rounded-xl px-4 py-3.5 text-center text-xl text-slate-900 font-mono font-bold tracking-widest focus:bg-white focus:outline-none focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 transition-all placeholder:text-slate-300"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPin(!showPin)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-700 cursor-pointer"
+                    >
+                      {showPin ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                    </button>
+                  </div>
+
+                  {error && (
+                    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium leading-relaxed animate-in fade-in">
+                      {error}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStage("code");
+                      setError(null);
+                    }}
+                    className="py-3 px-4 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-[13px] font-semibold transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Back</span>
+                  </button>
+
+                  <button
+                    type="submit"
+                    className="flex-1 py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-[14px] font-bold shadow-sm transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-[0.99]"
+                  >
+                    <span>Unlock &amp; Enter</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </form>
+
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-500 leading-relaxed text-center">
+                Security PIN is managed exclusively by the event coordinator in the Google Sheets FormSync add-on.
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="p-3.5 border-t border-slate-100 bg-slate-50/50 text-center">
+          <p className="text-[11px] text-slate-400">
+            FormSync Field Check-In &amp; Gate Scanner Portal
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};

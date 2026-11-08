@@ -342,7 +342,7 @@ export function GateScannerView({
                           type="text"
                           value={manualTicketInput}
                           onChange={(e) => setManualTicketInput(e.target.value)}
-                          placeholder="Enter ticket code (e.g. FS9K-7M2P:TKT-101)..."
+                          placeholder={`Enter ticket code (e.g. ${event.eventCode || "EVENT"}:TKT-001)...`}
                           className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-800 font-mono focus:outline-none focus:bg-white focus:border-slate-400"
                         />
                       </div>

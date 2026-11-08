@@ -135,6 +135,13 @@ export interface WorkspaceEventConfig {
   securitySecret: string;
 
   /**
+   * PIN keamanan operator opsional (4-8 digit).
+   * Jika diset, panitia lapangan wajib memasukkan PIN ini sebelum membuka scanner.
+   * Jika kosong/tidak diset, akses pemindai bersifat terbuka (open access).
+   */
+  pin?: string;
+
+  /**
    * URL Webhook Google Apps Script terhubung (opsional)
    */
   spreadsheetWebhookUrl?: string;

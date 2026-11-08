@@ -4,7 +4,6 @@ import {
   ShieldCheck,
   TableProperties,
   Users,
-  RefreshCw,
   X,
 } from "lucide-react";
 import {
@@ -24,9 +23,25 @@ import {
   revertCheckIn,
   addSessionToEvent,
   deleteSessionFromEvent,
+  isEventWorkspaceExists,
+  registerWorkspaceEvent,
+  saveWebhookMapping,
+  getWebhookForEvent,
   DEFAULT_DEMO_EVENT,
 } from "./core/storage";
+import {
+  isEventPinProtected,
+  verifyOperatorPin,
+  isEventUnlockedInSession,
+  setEventUnlockedInSession,
+  clearEventUnlockedInSession,
+} from "./core/securityLock";
 import { validateEventCodeFormat } from "./core/eventCodeGenerator";
+import {
+  testSpreadsheetConnectivity,
+  fetchEventFromSpreadsheet,
+  syncCheckInToSpreadsheet,
+} from "./bridge/spreadsheetSync";
 import { FormSyncBrandLogo } from "./components/FormSyncBrandLogo";
 import { AttendanceLogo } from "./components/BrandLogos";
 import { GateScannerView } from "./scanner/GateScannerView";
@@ -34,8 +49,27 @@ import { CrossCheckMatrixTable } from "./matrix/CrossCheckMatrixTable";
 import { AttendeesTable } from "./directory/AttendeesTable";
 import { AttendeeFilterBar, FilterStatus } from "./directory/AttendeeFilterBar";
 import { WorkspaceControlPanel } from "./coordinator/WorkspaceControlPanel";
+import { PinLockScreen } from "./auth/PinLockScreen";
+import { ConnectEventScreen, ConnectResult } from "./auth/ConnectEventScreen";
 
 export type ActiveViewTab = "scanner" | "matrix" | "directory";
+
+/**
+ * Sinkronkan parameter event di URL browser tanpa reload halaman.
+ */
+function updateBrowserUrlEvent(code: string | null) {
+  if (typeof window === "undefined") return;
+  try {
+    const nextUrl = new URL(window.location.href);
+    if (code) {
+      nextUrl.searchParams.set("event", code);
+    } else {
+      nextUrl.searchParams.delete("event");
+      nextUrl.searchParams.delete("code");
+    }
+    window.history.replaceState({}, "", nextUrl.toString());
+  } catch {}
+}
 
 /**
  * Aplikasi Utama FormSync Attendance & Check-In Portal.
@@ -49,23 +83,34 @@ export function FormSyncApp() {
       const params = new URLSearchParams(window.location.search);
       const code = params.get("event") || params.get("code");
       const tab = params.get("tab") as ActiveViewTab | null;
+      const origin = params.get("origin");
+      const reg = params.get("reg");
+      const wh = params.get("wh");
       return {
-        eventCode: code && validateEventCodeFormat(code) ? code.toUpperCase() : DEFAULT_DEMO_EVENT.eventCode,
+        eventCode: code && validateEventCodeFormat(code) ? code.toUpperCase() : "",
         initialTab: tab && ["scanner", "matrix", "directory"].includes(tab) ? tab : "scanner",
+        isFromSheets: origin === "sheets" || reg === "1",
+        webhookUrl: wh ? decodeURIComponent(wh) : "",
       };
     }
     return {
-      eventCode: DEFAULT_DEMO_EVENT.eventCode,
+      eventCode: "",
       initialTab: "scanner" as ActiveViewTab,
+      isFromSheets: false,
+      webhookUrl: "",
     };
   }, []);
 
-  const [activeEventCode, setActiveEventCode] = useState<string>(urlParams.eventCode);
+  const [activeEventCode, setActiveEventCode] = useState<string>("");
   const [codeInput, setCodeInput] = useState<string>("");
   const [codeError, setCodeError] = useState<string | null>(null);
+  const [connectInitialError, setConnectInitialError] = useState<string | null>(null);
   const [isSwitchingEvent, setIsSwitchingEvent] = useState(false);
 
   const [eventConfig, setEventConfig] = useState<WorkspaceEventConfig | null>(null);
+
+  // Status otentikasi PIN operator untuk event aktif
+  const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
 
   // Tab Utama (Default: scanner)
   const [activeTab, setActiveTab] = useState<ActiveViewTab>(urlParams.initialTab);
@@ -79,8 +124,143 @@ export function FormSyncApp() {
   const [statusFilter, setStatusFilter] = useState<FilterStatus>("all");
 
   const refreshEventData = (code: string) => {
+    if (!code || !code.trim()) {
+      setEventConfig(null);
+      return;
+    }
     const loaded = loadEventFromStorage(code);
     setEventConfig(loaded);
+  };
+
+  // Validasi URL saat aplikasi pertama kali dimuat
+  useEffect(() => {
+    if (!urlParams.eventCode) return;
+    const code = urlParams.eventCode;
+    const exists = isEventWorkspaceExists(code);
+
+    if (exists) {
+      setActiveEventCode(code);
+      refreshEventData(code);
+      setIsUnlocked(isEventUnlockedInSession(code));
+    } else if (urlParams.isFromSheets) {
+      // Terverifikasi dibuka dari Google Sheets Add-on resmi
+      const newEv = registerWorkspaceEvent(code, { origin: "sheets" });
+      if (urlParams.webhookUrl) {
+        newEv.spreadsheetWebhookUrl = urlParams.webhookUrl;
+        saveWebhookMapping(code, urlParams.webhookUrl);
+        saveEventToStorage(newEv);
+      }
+      setActiveEventCode(code);
+      refreshEventData(code);
+      setIsUnlocked(true);
+    } else {
+      // Tolak seketika: bukan dari Sheets dan belum pernah terdaftar
+      setActiveEventCode("");
+      setEventConfig(null);
+      setConnectInitialError(
+        `Event Code '${code}' was not found. Please open the scanner link directly from your FormSync Google Sheets add-on.`
+      );
+      updateBrowserUrlEvent(null);
+    }
+  }, [urlParams]);
+
+  const handleConnectEvent = (code: string): ConnectResult => {
+    const formatted = code.trim().toUpperCase();
+    if (!validateEventCodeFormat(formatted)) {
+      return { success: false, error: "Please enter a valid 8-digit code (XXXX-YYYY)." };
+    }
+
+    let exists = isEventWorkspaceExists(formatted);
+    if (!exists) {
+      // Pulihkan secara otomatis jika event memiliki pairing Webhook yang tersimpan
+      const mappedWh = getWebhookForEvent(formatted);
+      if (mappedWh) {
+        const newEv = registerWorkspaceEvent(formatted, { origin: "sheets" });
+        newEv.spreadsheetWebhookUrl = mappedWh;
+        saveEventToStorage(newEv);
+        exists = true;
+      }
+    }
+
+    if (!exists) {
+      return {
+        success: false,
+        error: `Event Code '${formatted}' not found. Please activate the Attendance module in your Google Sheet add-on to connect.`,
+      };
+    }
+
+    setActiveEventCode(formatted);
+    refreshEventData(formatted);
+    setConnectInitialError(null);
+    updateBrowserUrlEvent(formatted);
+    return { success: true };
+  };
+
+  const handleRegisterFromSpreadsheet = async (
+    webhookUrl: string,
+    eventCode: string
+  ): Promise<ConnectResult> => {
+    const conn = await testSpreadsheetConnectivity(webhookUrl, eventCode);
+    if (!conn.success) {
+      return { success: false, error: conn.message };
+    }
+
+    const targetCode = conn.eventCode || eventCode;
+    const fetchRes = await fetchEventFromSpreadsheet(webhookUrl, targetCode);
+    const newEvent = registerWorkspaceEvent(targetCode, {
+      origin: "sheets",
+      securitySecret: fetchRes.securitySecret,
+    });
+    newEvent.spreadsheetWebhookUrl = webhookUrl.trim();
+
+    if (fetchRes.success && fetchRes.attendees) {
+      newEvent.attendees = fetchRes.attendees;
+    }
+    saveEventToStorage(newEvent);
+
+    setActiveEventCode(targetCode);
+    setEventConfig(newEvent);
+    setConnectInitialError(null);
+    updateBrowserUrlEvent(targetCode);
+    return { success: true };
+  };
+
+  const handleDisconnectEvent = () => {
+    setActiveEventCode("");
+    setEventConfig(null);
+    setIsUnlocked(false);
+    setConnectInitialError(null);
+    updateBrowserUrlEvent(null);
+  };
+
+  // Saat eventConfig dimuat atau activeEventCode berganti, cek status proteksi PIN
+  useEffect(() => {
+    if (!eventConfig) return;
+    if (!isEventPinProtected(eventConfig.pin)) {
+      // Jika event tidak memiliki PIN (open access), otomatis diizinkan
+      setIsUnlocked(true);
+    } else {
+      // Jika event dilindungi PIN, periksa apakah sudah pernah di-unlock di session ini
+      setIsUnlocked(isEventUnlockedInSession(eventConfig.eventCode));
+    }
+  }, [eventConfig, activeEventCode]);
+
+  const handleUnlockPin = (pin: string): boolean => {
+    if (!eventConfig) return false;
+    const isValid = verifyOperatorPin(pin, eventConfig.pin);
+    if (isValid) {
+      setEventUnlockedInSession(eventConfig.eventCode);
+      setIsUnlocked(true);
+      return true;
+    }
+    return false;
+  };
+
+  const handleLockWorkspace = () => {
+    if (eventConfig) {
+      clearEventUnlockedInSession(eventConfig.eventCode);
+      setIsUnlocked(false);
+    }
   };
 
   // Bersihkan data dummy residu lama dari seluruh localStorage
@@ -136,6 +316,17 @@ export function FormSyncApp() {
     }
     const { result, updatedEvent } = processCheckIn(eventConfig, ticketCode);
     setEventConfig(updatedEvent);
+
+    // Sinkronkan ke spreadsheet secara asinkron jika Webhook URL terhubung
+    if (result.success && updatedEvent.spreadsheetWebhookUrl) {
+      syncCheckInToSpreadsheet(updatedEvent.spreadsheetWebhookUrl, {
+        eventCode: updatedEvent.eventCode,
+        ticketCode: ticketCode,
+        securitySecret: updatedEvent.securitySecret,
+        checkInTime: result.attendee?.checkInTime,
+      }).catch((err) => console.warn("Background sheet sync error:", err));
+    }
+
     return result;
   };
 
@@ -149,6 +340,17 @@ export function FormSyncApp() {
     }
     const { result, updatedEvent } = processSessionCheckIn(eventConfig, ticketCode, sessionId);
     setEventConfig(updatedEvent);
+
+    // Sinkronkan ke spreadsheet secara asinkron jika Webhook URL terhubung
+    if (result.success && updatedEvent.spreadsheetWebhookUrl) {
+      syncCheckInToSpreadsheet(updatedEvent.spreadsheetWebhookUrl, {
+        eventCode: updatedEvent.eventCode,
+        ticketCode: ticketCode,
+        securitySecret: updatedEvent.securitySecret,
+        checkInTime: result.attendee?.sessions?.[sessionId]?.checkInTime || new Date().toTimeString().split(" ")[0],
+      }).catch((err) => console.warn("Background sheet sync error:", err));
+    }
+
     return result;
   };
 
@@ -182,11 +384,16 @@ export function FormSyncApp() {
     e.preventDefault();
     const formatted = codeInput.trim().toUpperCase();
     if (!validateEventCodeFormat(formatted)) {
-      setCodeError("Format: XXXX-YYYY (e.g. FS9K-7M2P)");
+      setCodeError("Format: XXXX-YYYY (e.g. ABCD-1234)");
+      return;
+    }
+    if (!isEventWorkspaceExists(formatted)) {
+      setCodeError(`Event Code '${formatted}' not found.`);
       return;
     }
     setCodeError(null);
     setActiveEventCode(formatted);
+    refreshEventData(formatted);
     setCodeInput("");
     setIsSwitchingEvent(false);
   };
@@ -208,6 +415,34 @@ export function FormSyncApp() {
     });
   }, [attendees, statusFilter, searchTerm]);
 
+  // 1. Jika belum ada kode acara yang aktif (ID murni kosong secara default):
+  if (!activeEventCode || !eventConfig) {
+    return (
+      <ConnectEventScreen
+        onConnectEvent={handleConnectEvent}
+        onRegisterFromSpreadsheet={handleRegisterFromSpreadsheet}
+        initialError={connectInitialError}
+      />
+    );
+  }
+
+  // 2. Jika event dilindungi PIN dan operator belum memasukkan PIN yang benar di sesi ini:
+  if (isEventPinProtected(eventConfig.pin) && !isUnlocked) {
+    return (
+      <PinLockScreen
+        eventCode={activeEventCode}
+        eventName={eventConfig.eventName || "Attendance Workspace"}
+        onUnlock={handleUnlockPin}
+        onSelectEvent={(c) => {
+          const res = handleConnectEvent(c);
+          if (!res.success) {
+            setConnectInitialError(res.error || null);
+          }
+        }}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-100/80 py-4 sm:py-8 px-2 sm:px-4 font-sans text-slate-900 selection:bg-slate-200 flex justify-center items-start">
       {/* Modal Dialog Card Terpusat Persis Add-on FormSync Asli */}
@@ -224,12 +459,30 @@ export function FormSyncApp() {
           </div>
 
           <div className="flex items-center gap-2">
+            {isEventPinProtected(eventConfig.pin) && (
+              <button
+                type="button"
+                onClick={handleLockWorkspace}
+                className="text-xs font-medium text-slate-600 hover:text-rose-600 px-2 py-1 rounded hover:bg-slate-100 cursor-pointer transition-colors"
+                title="Lock workspace"
+              >
+                Lock
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setIsSwitchingEvent(!isSwitchingEvent)}
               className="text-xs font-medium text-slate-600 hover:text-slate-900 px-2 py-1 rounded hover:bg-slate-100 cursor-pointer transition-colors"
             >
               Switch Event
+            </button>
+            <button
+              type="button"
+              onClick={handleDisconnectEvent}
+              className="text-xs font-medium text-slate-500 hover:text-rose-600 px-2 py-1 rounded hover:bg-slate-100 cursor-pointer transition-colors"
+              title="Close this event workspace"
+            >
+              Exit
             </button>
             <button
               type="button"
@@ -251,7 +504,7 @@ export function FormSyncApp() {
                 type="text"
                 value={codeInput}
                 onChange={(e) => setCodeInput(e.target.value.toUpperCase())}
-                placeholder="e.g. FS9K-7M2P"
+                placeholder="e.g. ABCD-1234"
                 maxLength={9}
                 className="h-7 px-2.5 w-28 rounded-md border border-slate-300 bg-white font-mono text-slate-900 font-bold"
                 autoFocus

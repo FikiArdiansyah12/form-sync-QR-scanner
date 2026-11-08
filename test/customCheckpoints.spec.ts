@@ -61,6 +61,7 @@ describe("Custom Checkpoints Created by User (Zero Default Sessions)", () => {
 
     let event: WorkspaceEventConfig = {
       ...DEFAULT_DEMO_EVENT,
+      eventCode: "FS9K-7M2P",
       sessions: [],
       attendees: [mockAttendee],
     };

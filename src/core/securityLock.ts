@@ -184,3 +184,78 @@ export function verifyWorkspaceSecret(
   if (!providedSecret || !expectedSecret) return false;
   return providedSecret.trim() === expectedSecret.trim();
 }
+
+/**
+ * Memeriksa apakah suatu acara dilindungi oleh PIN keamanan operator.
+ *
+ * @param eventPin - Nilai PIN yang tersimpan di konfigurasi acara
+ * @returns True jika ada PIN yang dikonfigurasi (tidak kosong)
+ */
+export function isEventPinProtected(eventPin: string | undefined): boolean {
+  return Boolean(eventPin && eventPin.trim().length > 0);
+}
+
+/**
+ * Memvalidasi PIN yang dimasukkan oleh operator.
+ * Jika acara tidak memiliki proteksi PIN (open access), fungsi selalu mengembalikan true.
+ * Jika acara memiliki proteksi PIN, input operator wajib sama persis.
+ *
+ * @param providedPin - PIN yang dimasukkan operator di layar kunci
+ * @param eventPin - PIN keamanan acara yang tersimpan
+ * @returns True jika sah atau acara berstatus open access
+ */
+export function verifyOperatorPin(
+  providedPin: string | undefined,
+  eventPin: string | undefined
+): boolean {
+  if (!isEventPinProtected(eventPin)) {
+    return true;
+  }
+  const cleanProvided = (providedPin || "").trim();
+  const cleanEvent = (eventPin || "").trim();
+  return cleanProvided === cleanEvent;
+}
+
+const UNLOCK_STORAGE_PREFIX = "formsync_session_unlocked_";
+
+/**
+ * Memeriksa apakah event ini sudah berhasil di-unlock pada sesi browser saat ini.
+ *
+ * @param eventCode - Kode acara 8-digit
+ * @returns boolean
+ */
+export function isEventUnlockedInSession(eventCode: string): boolean {
+  if (!eventCode || typeof window === "undefined") return false;
+  try {
+    const key = `${UNLOCK_STORAGE_PREFIX}${normalizeEventCode(eventCode)}`;
+    return sessionStorage.getItem(key) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Menandai event berhasil di-unlock pada sesi browser saat ini.
+ *
+ * @param eventCode - Kode acara 8-digit
+ */
+export function setEventUnlockedInSession(eventCode: string): void {
+  if (!eventCode || typeof window === "undefined") return;
+  try {
+    const key = `${UNLOCK_STORAGE_PREFIX}${normalizeEventCode(eventCode)}`;
+    sessionStorage.setItem(key, "true");
+  } catch {}
+}
+
+/**
+ * Menghapus status unlock pada sesi browser untuk event tertentu (Lock kembali).
+ *
+ * @param eventCode - Kode acara 8-digit
+ */
+export function clearEventUnlockedInSession(eventCode: string): void {
+  if (!eventCode || typeof window === "undefined") return;
+  try {
+    const key = `${UNLOCK_STORAGE_PREFIX}${normalizeEventCode(eventCode)}`;
+    sessionStorage.removeItem(key);
+  } catch {}
+}
