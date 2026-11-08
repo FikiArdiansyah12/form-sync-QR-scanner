@@ -1,11 +1,8 @@
 import React, { useState, useEffect } from "react";
 import {
-  ArrowRight,
   QrCode,
   ShieldCheck,
-  History,
   Lock,
-  ArrowLeft,
   KeyRound,
   Eye,
   EyeOff,
@@ -35,12 +32,10 @@ export interface ConnectEventScreenProps {
   initialError?: string | null;
 }
 
-const RECENT_EVENTS_STORAGE_KEY = "formsync_recent_events_history";
-
 /**
  * ConnectEventScreen
  * Layar tunggal terpadu untuk menghubungkan ruang kerja acara.
- * Alur terpadu tanpa tab ganda yang membingungkan:
+ * Alur terpadu tanpa tab ganda dan tanpa elemen redundan:
  * 1. Masukkan Event Code -> Langsung verifikasi & fetch ke backend
  * 2. Jika event ber-PIN -> Tampilkan form input Security PIN
  * 3. Jika event valid & PIN cocok -> Masuk ke Gate Scanner
@@ -56,7 +51,6 @@ export const ConnectEventScreen: React.FC<ConnectEventScreenProps> = ({
   const [pinInput, setPinInput] = useState("");
   const [showPin, setShowPin] = useState(false);
   const [error, setError] = useState<string | null>(initialError || null);
-  const [recentCodes, setRecentCodes] = useState<string[]>([]);
   const [isVerifying, setIsVerifying] = useState(false);
 
   // Opsi webhook manual (collapsible) jika perangkat belum pernah membuka link scanner
@@ -72,20 +66,6 @@ export const ConnectEventScreen: React.FC<ConnectEventScreenProps> = ({
       setError(initialError);
     }
   }, [initialError]);
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const raw = localStorage.getItem(RECENT_EVENTS_STORAGE_KEY);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) {
-            setRecentCodes(parsed.filter((c) => typeof c === "string" && c !== "FS9K-7M2P"));
-          }
-        }
-      } catch {}
-    }
-  }, []);
 
   const handleFormatInput = (val: string) => {
     const raw = val.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
@@ -154,18 +134,26 @@ export const ConnectEventScreen: React.FC<ConnectEventScreenProps> = ({
             return;
           }
 
-          // Jika open access (tanpa PIN), langsung connect!
+          // Jika open access (tanpa PIN), langsung connect
           completeConnection(formatted);
+          return;
+        } else {
+          // Fetch gagal
+          setError(
+            fetchRes.error ||
+              `Failed to fetch event '${formatted}' from Google Sheets. Check your webhook URL.`
+          );
+          setIsVerifying(false);
           return;
         }
       }
 
-      // 3. Fallback: Cek apakah event sudah pernah disimpan di localStorage lokal
-      const localEvent = loadEventFromStorage(formatted);
-      if (localEvent) {
-        if (isEventPinProtected(localEvent.pin)) {
+      // 3. Jika tidak ada webhook tapi event sudah ada di local storage
+      if (isEventWorkspaceExists(formatted)) {
+        const localEvent = loadEventFromStorage(formatted);
+        if (localEvent && isEventPinProtected(localEvent.pin)) {
           setPendingEventCode(formatted);
-          setPendingExpectedPin(localEvent.pin);
+          setPendingExpectedPin(localEvent.pin || "");
           setStage("pin");
           setPinInput("");
           setIsVerifying(false);
@@ -216,73 +204,49 @@ export const ConnectEventScreen: React.FC<ConnectEventScreenProps> = ({
       setStage("code");
       return;
     }
-
-    // Simpan ke daftar riwayat yang baru dibuka
-    if (typeof window !== "undefined") {
-      try {
-        const nextList = [code, ...recentCodes.filter((c) => c !== code)].slice(0, 5);
-        localStorage.setItem(RECENT_EVENTS_STORAGE_KEY, JSON.stringify(nextList));
-      } catch {}
-    }
-  };
-
-  const handleSelectRecent = (code: string) => {
-    setError(null);
-    setCodeInput(code);
-    const local = loadEventFromStorage(code);
-    if (local && isEventPinProtected(local.pin)) {
-      setPendingEventCode(code);
-      setPendingExpectedPin(local.pin);
-      setStage("pin");
-      setPinInput("");
-    } else {
-      completeConnection(code);
-    }
   };
 
   return (
-    <div className="min-h-screen bg-slate-100/80 py-8 px-4 font-sans text-slate-900 selection:bg-slate-200 flex justify-center items-center">
-      <div className="w-full max-w-lg bg-white rounded-2xl sm:rounded-3xl border border-slate-200 shadow-xl overflow-hidden flex flex-col">
+    <div className="min-h-screen bg-slate-50 sm:bg-slate-100/80 p-0 sm:py-8 sm:px-4 font-sans text-slate-900 selection:bg-slate-200 flex justify-center items-center">
+      <div className="w-full max-w-lg bg-white sm:rounded-2xl border-0 sm:border border-slate-200 shadow-none sm:shadow-lg overflow-hidden flex flex-col min-h-screen sm:min-h-0">
         {/* Top Header Bar */}
         <PortalHeader badgeText={stage === "pin" ? "Protected" : "Connect"} />
 
         {/* Content Body */}
-        <div className="p-6 sm:p-8 space-y-6 bg-white">
+        <div className="p-5 sm:p-7 space-y-5 bg-white flex-1">
           {stage === "code" ? (
             /* TAHAP 1: INPUT EVENT CODE */
-            <div className="space-y-6 animate-in fade-in duration-200">
+            <div className="space-y-5">
               <div className="text-center space-y-2">
-                <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-slate-50 border border-slate-200 text-slate-900 mb-1">
-                  <QrCode className="w-7 h-7" />
+                <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-slate-100 text-slate-800 mb-1">
+                  <QrCode className="w-6 h-6" />
                 </div>
-                <h2 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
+                <h2 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight">
                   Connect Event Workspace
                 </h2>
-                <p className="text-[13px] text-slate-500 max-w-sm mx-auto leading-relaxed">
+                <p className="text-xs sm:text-sm text-slate-500 max-w-sm mx-auto leading-relaxed">
                   Enter the 8-digit Event Code from your Google Sheets FormSync add-on to access the gate scanner and attendance matrix.
                 </p>
               </div>
 
               <form onSubmit={handleProceedCode} className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-[13px] font-bold text-slate-700 uppercase tracking-wider block">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block">
                     8-Digit Event Code
                   </label>
 
-                  <div className="relative">
-                    <input
-                      type="text"
-                      maxLength={9}
-                      value={codeInput}
-                      onChange={(e) => handleFormatInput(e.target.value)}
-                      placeholder="e.g. ABCD-1234"
-                      autoFocus
-                      className="w-full bg-slate-50/60 border border-slate-300 rounded-xl px-4 py-3.5 text-center text-xl text-slate-900 font-mono font-bold tracking-widest uppercase focus:bg-white focus:outline-none focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 transition-all placeholder:text-slate-300"
-                    />
-                  </div>
+                  <input
+                    type="text"
+                    maxLength={9}
+                    value={codeInput}
+                    onChange={(e) => handleFormatInput(e.target.value)}
+                    placeholder="e.g. ABCD-1234"
+                    autoFocus
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-center text-xl text-slate-900 font-mono font-bold tracking-widest uppercase focus:bg-white focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 transition-all placeholder:text-slate-300"
+                  />
 
                   {error && (
-                    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium leading-relaxed animate-in fade-in">
+                    <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium leading-relaxed">
                       {error}
                     </div>
                   )}
@@ -291,15 +255,14 @@ export const ConnectEventScreen: React.FC<ConnectEventScreenProps> = ({
                 <button
                   type="submit"
                   disabled={isVerifying}
-                  className="w-full py-3.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white text-[14px] font-bold shadow-sm transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-[0.99]"
+                  className="w-full py-3.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white text-sm font-bold shadow-xs transition-colors cursor-pointer text-center"
                 >
-                  <span>{isVerifying ? "Verifying..." : "Connect Workspace"}</span>
-                  <ArrowRight className="w-4 h-4" />
+                  {isVerifying ? "Verifying..." : "Connect Workspace"}
                 </button>
               </form>
 
               {/* Opsi Opsional: Input Webhook Pertama Kali jika belum pairing */}
-              <div className="pt-2 border-t border-slate-100">
+              <div className="pt-2">
                 <button
                   type="button"
                   onClick={() => setShowCustomWebhook(!showCustomWebhook)}
@@ -314,7 +277,7 @@ export const ConnectEventScreen: React.FC<ConnectEventScreenProps> = ({
                 </button>
 
                 {showCustomWebhook && (
-                  <div className="mt-2.5 p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2 animate-in fade-in">
+                  <div className="mt-2.5 p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
                     <label className="text-[11px] font-bold text-slate-700 uppercase tracking-wider block">
                       Google Apps Script Webhook URL
                     </label>
@@ -332,30 +295,8 @@ export const ConnectEventScreen: React.FC<ConnectEventScreenProps> = ({
                 )}
               </div>
 
-              {/* Recent Workspaces Quick Links (Jika ada) */}
-              {recentCodes.length > 0 && (
-                <div className="pt-2 border-t border-slate-100 space-y-2.5">
-                  <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-500">
-                    <History className="w-3.5 h-3.5" />
-                    <span>Recently Opened Workspaces</span>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {recentCodes.map((code) => (
-                      <button
-                        key={code}
-                        type="button"
-                        onClick={() => handleSelectRecent(code)}
-                        className="px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-mono font-bold text-slate-800 transition-colors cursor-pointer"
-                      >
-                        {code}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
               {/* Help Callout */}
-              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 text-xs text-slate-600 leading-relaxed flex items-start gap-2.5">
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 text-xs text-slate-600 leading-relaxed flex items-start gap-2.5">
                 <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                 <div>
                   <span className="font-semibold text-slate-800 block">
@@ -370,22 +311,22 @@ export const ConnectEventScreen: React.FC<ConnectEventScreenProps> = ({
             </div>
           ) : (
             /* TAHAP 2: VERIFIKASI OPERATOR SECURITY PIN */
-            <div className="space-y-6 animate-in fade-in duration-200">
+            <div className="space-y-5">
               <div className="text-center space-y-2">
-                <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-amber-50 border border-amber-200 text-amber-600 mb-1">
-                  <Lock className="w-7 h-7" />
+                <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-amber-50 border border-amber-200 text-amber-600 mb-1">
+                  <Lock className="w-6 h-6" />
                 </div>
-                <h2 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
+                <h2 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight">
                   Security PIN Required
                 </h2>
-                <p className="text-[13px] text-slate-600 max-w-sm mx-auto leading-relaxed">
+                <p className="text-xs sm:text-sm text-slate-600 max-w-sm mx-auto leading-relaxed">
                   Workspace <strong className="font-mono text-slate-900 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">{pendingEventCode}</strong> is protected. Enter the 4–8 digit PIN configured in your Google Sheet add-on.
                 </p>
               </div>
 
               <form onSubmit={handleVerifyPin} className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-[13px] font-bold text-slate-700 uppercase tracking-wider block">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block">
                     Operator Security PIN
                   </label>
 
@@ -400,7 +341,7 @@ export const ConnectEventScreen: React.FC<ConnectEventScreenProps> = ({
                       }}
                       placeholder="Enter 4-8 digit PIN"
                       autoFocus
-                      className="w-full bg-slate-50/60 border border-slate-300 rounded-xl px-4 py-3.5 text-center text-xl text-slate-900 font-mono font-bold tracking-widest focus:bg-white focus:outline-none focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 transition-all placeholder:text-slate-300"
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-center text-xl text-slate-900 font-mono font-bold tracking-widest focus:bg-white focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 transition-all placeholder:text-slate-300"
                     />
                     <button
                       type="button"
@@ -412,7 +353,7 @@ export const ConnectEventScreen: React.FC<ConnectEventScreenProps> = ({
                   </div>
 
                   {error && (
-                    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium leading-relaxed animate-in fade-in">
+                    <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium leading-relaxed">
                       {error}
                     </div>
                   )}
@@ -425,23 +366,21 @@ export const ConnectEventScreen: React.FC<ConnectEventScreenProps> = ({
                       setStage("code");
                       setError(null);
                     }}
-                    className="py-3 px-4 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-[13px] font-semibold transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                    className="py-3 px-4 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs sm:text-sm font-semibold transition-colors cursor-pointer text-center"
                   >
-                    <ArrowLeft className="w-3.5 h-3.5" />
-                    <span>Back</span>
+                    Back
                   </button>
 
                   <button
                     type="submit"
-                    className="flex-1 py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-[14px] font-bold shadow-sm transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-[0.99]"
+                    className="flex-1 py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs sm:text-sm font-bold shadow-xs transition-colors cursor-pointer text-center"
                   >
-                    <span>Unlock &amp; Enter</span>
-                    <ArrowRight className="w-4 h-4" />
+                    Unlock and Enter
                   </button>
                 </div>
               </form>
 
-              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-500 leading-relaxed text-center">
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 leading-relaxed text-center">
                 Security PIN is managed exclusively by the event coordinator in the Google Sheets FormSync add-on.
               </div>
             </div>
@@ -449,8 +388,8 @@ export const ConnectEventScreen: React.FC<ConnectEventScreenProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="p-3.5 border-t border-slate-100 bg-slate-50/50 text-center">
-          <p className="text-[11px] text-slate-400">
+        <div className="p-3 border-t border-slate-100 bg-slate-50/50 text-center">
+          <p className="text-xs text-slate-400">
             FormSync Field Check-In &amp; Gate Scanner Portal
           </p>
         </div>

@@ -444,26 +444,26 @@ export function FormSyncApp() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100/80 py-4 sm:py-8 px-2 sm:px-4 font-sans text-slate-900 selection:bg-slate-200 flex justify-center items-start">
-      {/* Modal Dialog Card Terpusat Persis Add-on FormSync Asli */}
-      <div className="w-full max-w-4xl bg-white rounded-2xl sm:rounded-3xl border border-slate-200 shadow-xl overflow-hidden flex flex-col">
+    <div className="min-h-screen bg-slate-100 sm:py-6 sm:px-4 font-sans text-slate-900 selection:bg-slate-200 flex justify-center items-start">
+      {/* Modal Dialog Card Terpusat - Full Width & Clean di Mobile */}
+      <div className="w-full max-w-4xl bg-white sm:rounded-2xl border-0 sm:border border-slate-200 shadow-none sm:shadow-lg overflow-hidden flex flex-col min-h-screen sm:min-h-0">
         {/* 1. Modal Top Bar (FormSync Workspace Header) */}
-        <div className="p-4 sm:p-5 flex items-center justify-between border-b border-slate-100 bg-white select-none">
-          <div className="flex items-center gap-3">
+        <div className="p-3.5 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 bg-white gap-3 select-none">
+          <div className="flex items-center justify-between sm:justify-start gap-2.5">
             <h1 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
               FormSync Workspace
             </h1>
-            <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-600">
+            <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-700">
               {activeEventCode}
             </span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
             {isEventPinProtected(eventConfig.pin) && (
               <button
                 type="button"
                 onClick={handleLockWorkspace}
-                className="text-xs font-medium text-slate-600 hover:text-rose-600 px-2 py-1 rounded hover:bg-slate-100 cursor-pointer transition-colors"
+                className="text-xs font-semibold text-slate-600 hover:text-rose-600 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors"
                 title="Lock workspace"
               >
                 Lock
@@ -472,14 +472,14 @@ export function FormSyncApp() {
             <button
               type="button"
               onClick={() => setIsSwitchingEvent(!isSwitchingEvent)}
-              className="text-xs font-medium text-slate-600 hover:text-slate-900 px-2 py-1 rounded hover:bg-slate-100 cursor-pointer transition-colors"
+              className="text-xs font-semibold text-slate-600 hover:text-slate-900 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors"
             >
               Switch Event
             </button>
             <button
               type="button"
               onClick={handleDisconnectEvent}
-              className="text-xs font-medium text-slate-500 hover:text-rose-600 px-2 py-1 rounded hover:bg-slate-100 cursor-pointer transition-colors"
+              className="text-xs font-semibold text-slate-500 hover:text-rose-600 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors"
               title="Close this event workspace"
             >
               Exit
@@ -487,7 +487,7 @@ export function FormSyncApp() {
             <button
               type="button"
               onClick={() => setIsSettingsOpen(true)}
-              className="text-xs font-medium text-slate-600 hover:text-slate-900 px-2 py-1 rounded hover:bg-slate-100 cursor-pointer transition-colors flex items-center gap-1"
+              className="text-xs font-semibold text-slate-700 hover:text-slate-900 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors flex items-center gap-1.5"
             >
               <ShieldCheck className="size-3.5 text-emerald-600" />
               <span>Sheets Sync</span>
@@ -497,89 +497,86 @@ export function FormSyncApp() {
 
         {/* Popdown Switch Event Form */}
         {isSwitchingEvent && (
-          <div className="px-5 py-2.5 bg-slate-50 border-b border-slate-200">
-            <form onSubmit={handleSwitchEvent} className="flex items-center gap-2 text-xs">
-              <span className="text-slate-600 font-medium">Event Code:</span>
-              <input
-                type="text"
-                value={codeInput}
-                onChange={(e) => setCodeInput(e.target.value.toUpperCase())}
-                placeholder="e.g. ABCD-1234"
-                maxLength={9}
-                className="h-7 px-2.5 w-28 rounded-md border border-slate-300 bg-white font-mono text-slate-900 font-bold"
-                autoFocus
-              />
-              <button
-                type="submit"
-                className="h-7 px-3 rounded-md bg-slate-900 text-white font-bold hover:bg-slate-800 cursor-pointer"
-              >
-                Load
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsSwitchingEvent(false)}
-                className="text-slate-500 hover:text-slate-800 ml-1 cursor-pointer"
-              >
-                Cancel
-              </button>
-              {codeError && <span className="text-rose-600 ml-1">{codeError}</span>}
+          <div className="p-3 sm:px-5 bg-slate-50 border-b border-slate-200">
+            <form onSubmit={handleSwitchEvent} className="flex flex-col sm:flex-row sm:items-center gap-2 text-xs">
+              <span className="text-slate-700 font-semibold">Event Code:</span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={codeInput}
+                  onChange={(e) => setCodeInput(e.target.value.toUpperCase())}
+                  placeholder="e.g. ABCD-1234"
+                  maxLength={9}
+                  className="h-8 px-2.5 w-32 rounded-lg border border-slate-300 bg-white font-mono text-slate-900 font-bold focus:outline-none focus:border-slate-800"
+                  autoFocus
+                />
+                <button
+                  type="submit"
+                  className="h-8 px-3.5 rounded-lg bg-slate-900 text-white font-bold hover:bg-slate-800 cursor-pointer"
+                >
+                  Load
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsSwitchingEvent(false)}
+                  className="h-8 px-2 text-slate-500 hover:text-slate-800 cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+              {codeError && <span className="text-rose-600 font-medium">{codeError}</span>}
             </form>
           </div>
         )}
 
-        {/* 2. Horizontal Tab Pills Bar (Persis baris tab add-on di screenshot) */}
-        <div className="p-3 sm:px-5 flex items-center justify-between border-b border-slate-100 bg-white overflow-x-auto gap-3">
-          <div className="flex items-center gap-2 min-w-max">
-            {/* Logo Ikon FormSync Kecil */}
-            <div className="flex items-center pr-1 shrink-0">
-              <FormSyncBrandLogo className="h-6 w-auto" showDomain={false} />
-            </div>
-
+        {/* 2. Horizontal Tab Pills Bar - Responsif 3 Kolom di Mobile */}
+        <div className="p-2.5 sm:px-5 flex items-center justify-between border-b border-slate-100 bg-white gap-2">
+          <div className="grid grid-cols-3 sm:flex items-center gap-1.5 sm:gap-2 w-full sm:w-auto">
             {/* Tab 1: Scanner (Attendance) */}
             <button
               type="button"
               onClick={() => setActiveTab("scanner")}
-              className={`h-8 px-3 rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center gap-1.5 ${
+              className={`h-9 px-2.5 sm:px-3 rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
                 activeTab === "scanner"
                   ? "bg-white border border-[#ea1d25] text-[#ea1d25] font-bold shadow-xs ring-1 ring-[#ea1d25]/15"
-                  : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+                  : "bg-slate-50 sm:bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
               }`}
             >
-              <AttendanceLogo className="size-3.5 text-[#ea1d25]" />
-              <span>Gate Scanner</span>
+              <AttendanceLogo className="size-3.5 text-[#ea1d25] shrink-0" />
+              <span className="truncate">Scanner</span>
             </button>
 
             {/* Tab 2: Cross-Check Matrix */}
             <button
               type="button"
               onClick={() => setActiveTab("matrix")}
-              className={`h-8 px-3 rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center gap-1.5 ${
+              className={`h-9 px-2.5 sm:px-3 rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
                 activeTab === "matrix"
                   ? "bg-white border border-[#ea1d25] text-[#ea1d25] font-bold shadow-xs ring-1 ring-[#ea1d25]/15"
-                  : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+                  : "bg-slate-50 sm:bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
               }`}
             >
-              <TableProperties className="size-3.5 text-slate-600" />
-              <span>Cross-Check Matrix</span>
+              <TableProperties className="size-3.5 text-slate-600 shrink-0" />
+              <span className="truncate">Matrix</span>
             </button>
 
             {/* Tab 3: Attendees List */}
             <button
               type="button"
               onClick={() => setActiveTab("directory")}
-              className={`h-8 px-3 rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center gap-1.5 ${
+              className={`h-9 px-2.5 sm:px-3 rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
                 activeTab === "directory"
                   ? "bg-white border border-[#ea1d25] text-[#ea1d25] font-bold shadow-xs ring-1 ring-[#ea1d25]/15"
-                  : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+                  : "bg-slate-50 sm:bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
               }`}
             >
-              <Users className="size-3.5 text-slate-600" />
-              <span>Attendees ({attendees.length})</span>
+              <Users className="size-3.5 text-slate-600 shrink-0" />
+              <span className="truncate">Attendees ({attendees.length})</span>
             </button>
           </div>
 
-          {/* Module Pill Badge di Kanan Persis Screenshot */}
-          <div className="shrink-0 hidden sm:block">
+          {/* Module Pill Badge di Kanan */}
+          <div className="shrink-0 hidden md:block">
             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider bg-slate-100 border border-slate-200 px-2.5 py-0.5 rounded-full">
               Attendance Module
             </span>
@@ -587,7 +584,7 @@ export function FormSyncApp() {
         </div>
 
         {/* 3. Main Modal Body Container */}
-        <div className="p-4 sm:p-5 flex-1 bg-white">
+        <div className="p-3.5 sm:p-5 flex-1 bg-white">
           {/* TAB 1: GATE SCANNER */}
           {activeTab === "scanner" && (
             <div className="animate-in fade-in duration-100">
@@ -644,22 +641,27 @@ export function FormSyncApp() {
           )}
         </div>
 
-        {/* 4. Modal Footer Bar (Persis Bottom Bar Add-on dengan Tombol Save Changes Merah) */}
-        <div className="p-3.5 sm:px-5 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between">
-          <button
-            type="button"
-            onClick={() => setActiveTab("scanner")}
-            className="px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 cursor-pointer transition-colors"
-          >
-            &larr; Back to Scanner
-          </button>
+        {/* 4. Modal Footer Bar */}
+        <div className="p-3 sm:px-5 border-t border-slate-100 bg-slate-50/70 flex items-center justify-between">
+          {activeTab !== "scanner" ? (
+            <button
+              type="button"
+              onClick={() => setActiveTab("scanner")}
+              className="px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 cursor-pointer transition-colors"
+            >
+              Back to Scanner
+            </button>
+          ) : (
+            <div />
+          )}
 
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => setIsSettingsOpen(true)}
-              className="px-4 py-2 rounded-xl bg-[#ea1d25] hover:bg-[#d41820] text-white text-xs font-bold cursor-pointer transition-colors flex items-center gap-1.5 shadow-xs"
+              className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer transition-colors flex items-center gap-1.5 shadow-xs"
             >
+              <ShieldCheck className="size-3.5 text-emerald-400" />
               <span>Sync with Sheets</span>
             </button>
           </div>
