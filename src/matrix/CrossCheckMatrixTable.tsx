@@ -111,13 +111,13 @@ export function CrossCheckMatrixTable({
           />
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between sm:justify-start gap-2 flex-wrap">
           {/* Segmented Filter Pills */}
-          <div className="flex items-center p-0.5 rounded-lg bg-slate-100 border border-slate-200 text-xs font-medium">
+          <div className="flex items-center p-0.5 rounded-lg bg-slate-100 border border-slate-200 text-xs font-medium flex-1 sm:flex-initial">
             <button
               type="button"
               onClick={() => setFilterType("all")}
-              className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
+              className={`flex-1 sm:flex-initial px-2 sm:px-2.5 py-1 rounded-md transition-all cursor-pointer text-center whitespace-nowrap ${
                 filterType === "all"
                   ? "bg-white text-slate-900 font-semibold shadow-xs"
                   : "text-slate-600 hover:text-slate-900"
@@ -128,7 +128,7 @@ export function CrossCheckMatrixTable({
             <button
               type="button"
               onClick={() => setFilterType("completed_all")}
-              className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
+              className={`flex-1 sm:flex-initial px-2 sm:px-2.5 py-1 rounded-md transition-all cursor-pointer text-center whitespace-nowrap ${
                 filterType === "completed_all"
                   ? "bg-white text-slate-900 font-semibold shadow-xs"
                   : "text-slate-600 hover:text-slate-900"
@@ -139,7 +139,7 @@ export function CrossCheckMatrixTable({
             <button
               type="button"
               onClick={() => setFilterType("absent")}
-              className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
+              className={`flex-1 sm:flex-initial px-2 sm:px-2.5 py-1 rounded-md transition-all cursor-pointer text-center whitespace-nowrap ${
                 filterType === "absent"
                   ? "bg-white text-slate-900 font-semibold shadow-xs"
                   : "text-slate-600 hover:text-slate-900"
@@ -153,10 +153,11 @@ export function CrossCheckMatrixTable({
           <button
             type="button"
             onClick={handleExportCsv}
-            className="h-8.5 px-3 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs font-medium text-slate-700 cursor-pointer flex items-center gap-1.5 transition-colors"
+            className="h-8.5 px-3 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs font-medium text-slate-700 cursor-pointer flex items-center gap-1.5 transition-colors shrink-0"
           >
             <Download className="size-3.5" />
-            <span>Export CSV</span>
+            <span className="hidden xs:inline">Export</span>
+            <span>CSV</span>
           </button>
         </div>
       </div>

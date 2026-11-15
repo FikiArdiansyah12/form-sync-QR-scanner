@@ -24,6 +24,9 @@ export interface SpreadsheetSyncPayload {
   eventCode: string;
   ticketCode: string;
   securitySecret: string;
+  sessionId?: string;
+  sessionName?: string;
+  action?: string;
   checkInTime?: string;
 }
 
@@ -32,7 +35,71 @@ export interface SpreadsheetSyncResponse {
   message?: string;
   name?: string;
   checkInTime?: string;
+  sessions?: any[];
+  clearedCells?: number;
   error?: string;
+}
+
+export interface SpreadsheetCreateSessionPayload {
+  eventCode: string;
+  securitySecret: string;
+  sessionName: string;
+  sessionType?: string;
+}
+
+export interface SpreadsheetCreateSessionResponse {
+  success: boolean;
+  message?: string;
+  sessions?: any[];
+  error?: string;
+}
+
+/**
+ * Helper untuk memvalidasi dan mengekstrak Webhook URL.
+ * Jika pengguna menempelkan tautan scanner yang mengandung parameter wh,
+ * sistem akan secara otomatis mengekstrak Webhook Google Apps Script di dalamnya.
+ */
+export function extractValidWebhookUrl(url: string): { valid: boolean; resolvedUrl: string; error?: string } {
+  if (!url || !url.trim()) {
+    return { valid: false, resolvedUrl: "", error: "Spreadsheet webhook URL is required." };
+  }
+  let cleanUrl = url.trim();
+
+  // Ekstrak parameter 'wh' jika pengguna menempelkan tautan portal lengkap
+  if (cleanUrl.includes("wh=")) {
+    try {
+      const parsed = new URL(cleanUrl);
+      const extractedWh = parsed.searchParams.get("wh");
+      if (extractedWh && extractedWh.includes("script.google.com")) {
+        return { valid: true, resolvedUrl: decodeURIComponent(extractedWh) };
+      }
+    } catch {}
+  }
+
+  // Deteksi tautan deployment lama yang sudah tidak aktif di Google Apps Script (404)
+  if (cleanUrl.includes("AKfycby_4eb")) {
+    return {
+      valid: false,
+      resolvedUrl: "",
+      error:
+        "This Webhook URL is an outdated deployment (404 Not Found). Please open your Google Sheet add-on to copy the active FormSync Webhook URL.",
+    };
+  }
+
+  // Deteksi tautan scanner portal tanpa webhook terlampir
+  if (
+    cleanUrl.includes("formsync.my.id") ||
+    (cleanUrl.includes("origin=sheets") && !cleanUrl.includes("script.google.com"))
+  ) {
+    return {
+      valid: false,
+      resolvedUrl: cleanUrl,
+      error:
+        "The provided URL is a Scanner Portal link, not a Google Apps Script Webhook. Webhook URL starts with https://script.google.com/macros/s/",
+    };
+  }
+
+  return { valid: true, resolvedUrl: cleanUrl };
 }
 
 /**
@@ -48,34 +115,24 @@ export async function fetchEventFromSpreadsheet(
   eventCode: string,
   fetchFn: typeof fetch = fetch
 ): Promise<SpreadsheetFetchResponse> {
-  if (!webhookUrl || !webhookUrl.trim()) {
-    return { success: false, error: "Spreadsheet webhook URL is required." };
+  const check = extractValidWebhookUrl(webhookUrl);
+  if (!check.valid) {
+    return { success: false, error: check.error };
   }
-
-  const cleanUrl = webhookUrl.trim();
-  if (
-    cleanUrl.includes("formsync.my.id") ||
-    (cleanUrl.includes("origin=sheets") && !cleanUrl.includes("script.google.com"))
-  ) {
-    return {
-      success: false,
-      error:
-        "The provided URL is a Scanner Portal link, not a Google Apps Script Webhook. Webhook URL starts with https://script.google.com/macros/s/",
-    };
-  }
+  const cleanUrl = check.resolvedUrl;
 
   if (!eventCode || !eventCode.trim()) {
     return { success: false, error: "Event code is required." };
   }
 
   try {
-    const cleanUrl = webhookUrl.trim();
     const cleanEventCode = normalizeEventCode(eventCode);
     const separator = cleanUrl.includes("?") ? "&" : "?";
     const targetUrl = `${cleanUrl}${separator}event=${encodeURIComponent(cleanEventCode)}`;
 
     const response = await fetchFn(targetUrl, {
       method: "GET",
+      cache: "no-store",
       headers: {
         Accept: "application/json",
       },
@@ -89,9 +146,56 @@ export async function fetchEventFromSpreadsheet(
     }
 
     const data = (await response.json()) as SpreadsheetFetchResponse;
+    if (data.error === "WORKSPACE_DISCONNECTED") {
+      return {
+        success: false,
+        error: "WORKSPACE_DISCONNECTED",
+        message: data.message || "This event workspace has been disconnected by administrator."
+      };
+    }
     return data;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Failed to fetch event data from spreadsheet.";
+    return {
+      success: false,
+      error: msg,
+    };
+  }
+}
+
+async function postAttendanceMutation(
+  webhookUrl: string,
+  bodyPayload: Record<string, unknown>,
+  errorContext: string,
+  fetchFn: typeof fetch = fetch
+): Promise<SpreadsheetSyncResponse> {
+  try {
+    const response = await fetchFn(webhookUrl.trim(), {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain;charset=utf-8",
+      },
+      body: JSON.stringify(bodyPayload),
+    });
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: `HTTP error ${errorContext}: ${response.status} ${response.statusText}`,
+      };
+    }
+
+    const data = (await response.json()) as SpreadsheetSyncResponse;
+    if (data.error === "WORKSPACE_DISCONNECTED") {
+      return {
+        success: false,
+        error: "WORKSPACE_DISCONNECTED",
+        message: data.message || "This event workspace has been disconnected by administrator.",
+      };
+    }
+    return data;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : `Network error ${errorContext}.`;
     return {
       success: false,
       error: msg,
@@ -123,36 +227,276 @@ export async function syncCheckInToSpreadsheet(
     };
   }
 
+  return postAttendanceMutation(
+    webhookUrl,
+    {
+      action: payload.action || "session_checkin",
+      eventCode: normalizeEventCode(payload.eventCode),
+      ticketCode: payload.ticketCode.trim(),
+      securitySecret: payload.securitySecret.trim(),
+      sessionId: payload.sessionId ? payload.sessionId.trim() : "",
+      ...(payload.sessionName ? { sessionName: payload.sessionName.trim() } : {}),
+      checkInTime: payload.checkInTime || new Date().toTimeString().split(" ")[0],
+    },
+    "syncing check-in",
+    fetchFn
+  );
+}
+
+/**
+ * Menyinkronkan pembatalan (Undo / Revert) status check-in peserta ke Google Sheets via Webhook POST.
+ * Mengosongkan sel Status dan Time terkait pada tab sheet 'Attendance'.
+ *
+ * @param webhookUrl - URL Deployment Web App Google Apps Script
+ * @param payload - Data pembatalan (eventCode, ticketCode, securitySecret, sessionId, sessionName)
+ * @param fetchFn - Optional custom fetch instance
+ * @returns Promise status pembatalan presensi di spreadsheet
+ */
+export async function syncRevertCheckInToSpreadsheet(
+  webhookUrl: string,
+  payload: SpreadsheetSyncPayload,
+  fetchFn: typeof fetch = fetch
+): Promise<SpreadsheetSyncResponse> {
+  const check = extractValidWebhookUrl(webhookUrl);
+  if (!check.valid) {
+    return { success: false, error: check.error || "Spreadsheet webhook URL is required." };
+  }
+
+  if (!payload.eventCode || !payload.ticketCode || !payload.securitySecret) {
+    return {
+      success: false,
+      error: "Missing required revert fields (eventCode, ticketCode, or securitySecret).",
+    };
+  }
+
+  return postAttendanceMutation(
+    check.resolvedUrl,
+    {
+      action: "revert_checkin",
+      eventCode: normalizeEventCode(payload.eventCode),
+      ticketCode: payload.ticketCode.trim(),
+      securitySecret: payload.securitySecret.trim(),
+      sessionId: payload.sessionId ? payload.sessionId.trim() : "",
+      ...(payload.sessionName ? { sessionName: payload.sessionName.trim() } : {}),
+    },
+    "reverting check-in",
+    fetchFn
+  );
+}
+
+/**
+ * Menyinkronkan penambahan sesi/checkpoint baru secara instan ke Google Sheets.
+ * Membuat kolom fisik [Nama Sesi] Status dan [Nama Sesi] Time di tab sheet 'Attendance'.
+ *
+ * @param webhookUrl - URL Webhook Google Apps Script
+ * @param payload - Data sesi (eventCode, securitySecret, sessionName, sessionType)
+ * @param fetchFn - Optional custom fetch instance
+ * @returns Promise status pembuatan sesi di spreadsheet
+ */
+export async function syncCreateSessionToSpreadsheet(
+  webhookUrl: string,
+  payload: SpreadsheetCreateSessionPayload,
+  fetchFn: typeof fetch = fetch
+): Promise<SpreadsheetCreateSessionResponse> {
+  const check = extractValidWebhookUrl(webhookUrl);
+  if (!check.valid) {
+    return { success: false, error: check.error || "Spreadsheet webhook URL is required." };
+  }
+  const cleanUrl = check.resolvedUrl;
+
+  if (!payload.eventCode || !payload.securitySecret || !payload.sessionName) {
+    return {
+      success: false,
+      error: "Missing required session fields (eventCode, securitySecret, or sessionName).",
+    };
+  }
+
   try {
-    const response = await fetchFn(webhookUrl.trim(), {
+    const response = await fetchFn(cleanUrl, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
+        "Content-Type": "text/plain;charset=utf-8",
       },
       body: JSON.stringify({
+        action: "create_session",
         eventCode: normalizeEventCode(payload.eventCode),
-        ticketCode: payload.ticketCode.trim(),
         securitySecret: payload.securitySecret.trim(),
-        checkInTime: payload.checkInTime || new Date().toTimeString().split(" ")[0],
+        sessionName: payload.sessionName.trim(),
+        sessionType: payload.sessionType || "checkin",
       }),
     });
 
     if (!response.ok) {
       return {
         success: false,
-        error: `HTTP error syncing check-in: ${response.status} ${response.statusText}`,
+        error: `HTTP error syncing session: ${response.status} ${response.statusText}`,
       };
     }
 
-    const data = (await response.json()) as SpreadsheetSyncResponse;
+    const data = (await response.json()) as SpreadsheetCreateSessionResponse;
+    if (data.error === "WORKSPACE_DISCONNECTED") {
+      return {
+        success: false,
+        error: "WORKSPACE_DISCONNECTED",
+        message: data.message || "This event workspace has been disconnected by administrator.",
+      };
+    }
     return data;
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Network error syncing check-in to spreadsheet.";
+    const msg = err instanceof Error ? err.message : "Network error creating session in spreadsheet.";
     return {
       success: false,
       error: msg,
     };
+  }
+}
+
+/**
+ * Menyinkronkan penghapusan checkpoint sesi ke backend spreadsheet.
+ *
+ * @param webhookUrl - URL Webhook Google Apps Script
+ * @param eventCode - Kode acara
+ * @param securitySecret - Token rahasia acara
+ * @param sessionId - ID sesi yang akan dihapus
+ * @param fetchFn - Optional fetch instance
+ */
+export async function syncDeleteSessionToSpreadsheet(
+  webhookUrl: string,
+  eventCode: string,
+  securitySecret: string,
+  sessionId: string,
+  sessionNameOrFetchFn?: string | typeof fetch,
+  customFetchFn?: typeof fetch | string
+): Promise<{ success: boolean; message?: string; sessions?: any[]; error?: string }> {
+  let sessionName = "";
+  let fetchFn = fetch;
+
+  if (typeof sessionNameOrFetchFn === "string") {
+    sessionName = sessionNameOrFetchFn;
+    if (typeof customFetchFn === "function") {
+      fetchFn = customFetchFn;
+    }
+  } else if (typeof sessionNameOrFetchFn === "function") {
+    fetchFn = sessionNameOrFetchFn;
+    if (typeof customFetchFn === "string") {
+      sessionName = customFetchFn;
+    }
+  }
+
+  const check = extractValidWebhookUrl(webhookUrl);
+  if (!check.valid) {
+    return { success: false, error: check.error || "Spreadsheet webhook URL is required." };
+  }
+  if (!eventCode || !sessionId) {
+    return { success: false, error: "Missing required fields (eventCode or sessionId)." };
+  }
+  try {
+    const response = await fetchFn(check.resolvedUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain;charset=utf-8",
+      },
+      body: JSON.stringify({
+        action: "delete_session",
+        eventCode: normalizeEventCode(eventCode),
+        securitySecret: securitySecret.trim(),
+        sessionId: sessionId.trim(),
+        ...(sessionName ? { sessionName: sessionName.trim() } : {}),
+      }),
+    });
+    if (!response.ok) {
+      return { success: false, error: `HTTP error deleting session: ${response.status} ${response.statusText}` };
+    }
+    return await response.json();
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Network error deleting session from spreadsheet.";
+    return { success: false, error: msg };
+  }
+}
+
+/**
+ * Menyinkronkan status aktif/non-aktif checkpoint sesi ke backend spreadsheet.
+ *
+ * @param webhookUrl - URL Webhook Google Apps Script
+ * @param eventCode - Kode acara
+ * @param securitySecret - Token rahasia acara
+ * @param sessionId - ID sesi
+ * @param isActive - Status aktif
+ * @param fetchFn - Optional fetch instance
+ */
+export async function syncToggleSessionToSpreadsheet(
+  webhookUrl: string,
+  eventCode: string,
+  securitySecret: string,
+  sessionId: string,
+  isActive: boolean,
+  fetchFn: typeof fetch = fetch
+): Promise<{ success: boolean; message?: string; sessions?: any[]; error?: string }> {
+  const check = extractValidWebhookUrl(webhookUrl);
+  if (!check.valid) {
+    return { success: false, error: check.error || "Spreadsheet webhook URL is required." };
+  }
+  try {
+    const response = await fetchFn(check.resolvedUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain;charset=utf-8",
+      },
+      body: JSON.stringify({
+        action: "toggle_session",
+        eventCode: normalizeEventCode(eventCode),
+        securitySecret: securitySecret.trim(),
+        sessionId: sessionId.trim(),
+        isActive: Boolean(isActive),
+      }),
+    });
+    if (!response.ok) {
+      return { success: false, error: `HTTP error toggling session: ${response.status} ${response.statusText}` };
+    }
+    return await response.json();
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Network error toggling session status.";
+    return { success: false, error: msg };
+  }
+}
+
+/**
+ * Meminta Google Apps Script menyinkronkan data pendaftar dari sheet sumber ke tab 'Attendance'.
+ *
+ * @param webhookUrl - URL Webhook Google Apps Script
+ * @param eventCode - Kode acara 8-digit
+ * @param securitySecret - Token otentikasi
+ * @param fetchFn - Optional fetch instance
+ */
+export async function requestAttendeeSyncFromSpreadsheet(
+  webhookUrl: string,
+  eventCode: string,
+  securitySecret: string,
+  fetchFn: typeof fetch = fetch
+): Promise<{ success: boolean; message?: string; syncResult?: any; error?: string }> {
+  const check = extractValidWebhookUrl(webhookUrl);
+  if (!check.valid) {
+    return { success: false, error: check.error };
+  }
+  try {
+    const response = await fetchFn(check.resolvedUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain;charset=utf-8",
+      },
+      body: JSON.stringify({
+        action: "sync_attendees",
+        eventCode: normalizeEventCode(eventCode),
+        securitySecret: securitySecret.trim(),
+      }),
+    });
+    if (!response.ok) {
+      return { success: false, error: `HTTP ${response.status}: ${response.statusText}` };
+    }
+    return await response.json();
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Network error syncing attendees.";
+    return { success: false, error: msg };
   }
 }
 
@@ -174,7 +518,8 @@ export function mergeRemoteAttendees(
   return {
     ...current,
     pin: remote.pin !== undefined ? remote.pin : current.pin,
-    attendees: remote.attendees || current.attendees,
+    sessions: Array.isArray(remote.sessions) ? remote.sessions : current.sessions,
+    attendees: Array.isArray(remote.attendees) ? remote.attendees : current.attendees,
     updatedAt: remote.updatedAt || new Date().toISOString(),
   };
 }
@@ -203,8 +548,7 @@ export async function syncPinToSpreadsheet(
     const res = await fetchFn(webhookUrl.trim(), {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
+        "Content-Type": "text/plain;charset=utf-8",
       },
       body: JSON.stringify({
         action: "update_pin",

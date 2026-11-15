@@ -26,6 +26,7 @@ export interface GateScannerViewProps {
   onSelectSession: (sessionId: string) => void;
   onAddSession: (name: string, type: SessionType) => void;
   onDeleteSession: (sessionId: string) => void;
+  onToggleSession?: (sessionId: string, isActive: boolean) => void;
   attendees: Attendee[];
   onCheckInSession: (ticketCode: string, sessionId: string) => CheckInValidationResult;
   onRevertSession: (attendeeId: string, sessionId: string) => void;
@@ -44,6 +45,7 @@ export function GateScannerView({
   onSelectSession,
   onAddSession,
   onDeleteSession,
+  onToggleSession,
   attendees,
   onCheckInSession,
   onRevertSession,
@@ -53,10 +55,11 @@ export function GateScannerView({
   const [lastResult, setLastResult] = useState<CheckInValidationResult | null>(null);
   const [manualSearchQuery, setManualSearchQuery] = useState("");
 
-  // State untuk form inline tambah checkpoint
+  // State untuk form inline tambah checkpoint & konfirmasi hapus
   const [isAddingSession, setIsAddingSession] = useState(false);
   const [newSessionName, setNewSessionName] = useState("");
   const [newSessionType, setNewSessionType] = useState<SessionType>("checkin");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const currentSession =
     sessions.find((s) => s.id === activeSessionId) || sessions[0];
@@ -122,19 +125,21 @@ export function GateScannerView({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 self-start sm:self-auto">
-          <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full">
-            Camera Ready
-          </span>
+        <div className="flex items-center gap-1.5 self-start sm:self-auto text-xs font-semibold text-emerald-600">
+          <span className="size-2 rounded-full bg-emerald-500 shrink-0" />
+          <span>Camera Ready</span>
         </div>
       </div>
 
-      {/* 2. Checkpoints Section - Card Bersih */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 space-y-2.5 shadow-2xs">
+      {/* 2. Checkpoints Section - Card Bersih & Kontrol Lengkap */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 space-y-3 shadow-2xs">
         <div className="flex items-center justify-between">
           <span className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
             <Layers className="size-3.5 text-slate-600" />
             <span>Event Checkpoints</span>
+            <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold">
+              {sessions.length}
+            </span>
           </span>
           {currentSession && (
             <span className="text-xs font-medium text-slate-500 font-mono">
@@ -149,102 +154,202 @@ export function GateScannerView({
 
         {/* Checkpoint Pills & Add Form */}
         {sessions.length === 0 ? (
-          <form onSubmit={handleCreateSession} className="flex flex-col sm:flex-row gap-2 pt-1">
+          <form onSubmit={handleCreateSession} className="flex flex-col sm:flex-row gap-2.5 pt-1.5">
             <input
               type="text"
               value={newSessionName}
               onChange={(e) => setNewSessionName(e.target.value)}
               placeholder="Enter checkpoint name (e.g. Main Gate, Lunch)..."
-              className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-800 focus:outline-none focus:bg-white focus:border-slate-400"
+              className="w-full sm:flex-1 h-10.5 bg-slate-50 border border-slate-300 rounded-xl px-3.5 text-[13.5px] text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 transition-all shadow-2xs"
               autoFocus
             />
             <button
               type="submit"
-              className="h-9 px-4 rounded-lg bg-[#ea1d25] hover:bg-[#d41820] text-white text-xs font-bold cursor-pointer transition-colors"
+              className="w-full sm:w-auto h-10.5 px-5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-[13.5px] font-bold cursor-pointer transition-colors flex items-center justify-center shadow-2xs shrink-0"
             >
               Create Checkpoint
             </button>
           </form>
         ) : (
-          <div className="flex items-center gap-1.5 flex-wrap pt-1">
-            {sessions.map((sess) => {
-              const isSelected = sess.id === currentSession?.id;
-              return (
-                <div
-                  key={sess.id}
-                  className={`flex items-center rounded-lg border text-xs transition-all ${
-                    isSelected
-                      ? "bg-white border-[#ea1d25] text-[#ea1d25] font-bold shadow-xs ring-1 ring-[#ea1d25]/20"
-                      : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
-                  }`}
-                >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onSelectSession(sess.id);
-                      setLastResult(null);
-                    }}
-                    className="py-1.5 px-3 cursor-pointer"
-                  >
-                    {sess.name}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onDeleteSession(sess.id)}
-                    className={`pr-2 pl-1 py-1.5 cursor-pointer opacity-50 hover:opacity-100 ${
-                      isSelected ? "text-[#ea1d25]" : "text-slate-400 hover:text-rose-600"
-                    }`}
-                    title="Delete checkpoint"
-                  >
-                    <X className="size-3" />
-                  </button>
-                </div>
-              );
-            })}
+          <div className="space-y-3 pt-1">
+            {/* Grid Kontrol Checkpoint Terstruktur */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {sessions.map((sess) => {
+                const isSelected = sess.id === currentSession?.id;
+                const isActive = sess.isActive !== false;
+                const isConfirmingDelete = confirmDeleteId === sess.id;
 
-            {!isAddingSession ? (
-              <button
-                type="button"
-                onClick={() => setIsAddingSession(true)}
-                className="h-8 px-2.5 rounded-lg border border-dashed border-slate-300 bg-white hover:bg-slate-50 text-xs font-medium text-slate-600 cursor-pointer flex items-center gap-1 transition-colors"
-              >
-                <Plus className="size-3" />
-                <span>Add Checkpoint</span>
-              </button>
-            ) : (
-              <form onSubmit={handleCreateSession} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full mt-2">
-                <input
-                  type="text"
-                  value={newSessionName}
-                  onChange={(e) => setNewSessionName(e.target.value)}
-                  placeholder="Checkpoint name..."
-                  className="flex-1 h-8.5 px-3 rounded-lg border border-slate-300 bg-white text-xs text-slate-800 focus:outline-none focus:border-slate-500"
-                  autoFocus
-                />
-                <select
-                  value={newSessionType}
-                  onChange={(e) => setNewSessionType(e.target.value as SessionType)}
-                  className="h-8.5 px-2.5 rounded-lg border border-slate-300 bg-white text-xs text-slate-700"
-                >
-                  <option value="checkin">Gate Check-In</option>
-                  <option value="redemption">Voucher Claim</option>
-                </select>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="submit"
-                    className="flex-1 sm:flex-none h-8.5 px-3.5 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-800 cursor-pointer"
+                return (
+                  <div
+                    key={sess.id}
+                    className={`rounded-xl border p-2.5 transition-all flex flex-col justify-between gap-2 ${
+                      isSelected
+                        ? "bg-slate-50 border-slate-900 shadow-2xs ring-1 ring-slate-900/10"
+                        : "bg-white border-slate-200 hover:border-slate-300"
+                    }`}
                   >
-                    Save
-                  </button>
+                    <div className="flex items-center justify-between gap-2 min-w-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSelectSession(sess.id);
+                          setLastResult(null);
+                        }}
+                        className="text-left font-bold text-[13px] text-slate-900 hover:text-slate-700 truncate cursor-pointer flex-1"
+                      >
+                        {sess.name}
+                      </button>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {/* Toggle Status Aktif / Paused */}
+                        {onToggleSession && (
+                          <button
+                            type="button"
+                            onClick={() => onToggleSession(sess.id, !isActive)}
+                            className={`px-2 py-0.5 rounded-md text-[10.5px] font-semibold cursor-pointer border transition-colors ${
+                              isActive
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
+                                : "bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200"
+                            }`}
+                            title={isActive ? "Click to Pause" : "Click to Activate"}
+                          >
+                            {isActive ? "Active" : "Paused"}
+                          </button>
+                        )}
+
+                        <span className="text-[10.5px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 uppercase">
+                          {sess.type === "redemption" ? "Claim" : "Gate"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-[11px] text-slate-500">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSelectSession(sess.id);
+                          setLastResult(null);
+                        }}
+                        className={`font-semibold cursor-pointer ${
+                          isSelected ? "text-slate-900 font-bold" : "text-slate-500 hover:text-slate-800"
+                        }`}
+                      >
+                        {isSelected ? "Current Active Scanner" : "Select for Scanning"}
+                      </button>
+
+                      {isConfirmingDelete ? (
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onDeleteSession(sess.id);
+                              setConfirmDeleteId(null);
+                            }}
+                            className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10.5px] cursor-pointer"
+                          >
+                            Confirm Delete
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteId(null)}
+                            className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[10.5px] cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteId(sess.id)}
+                          className="text-slate-400 hover:text-rose-600 p-1 rounded cursor-pointer transition-colors"
+                          title="Delete Checkpoint"
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Tombol Tambah Checkpoint Baru */}
+            {!isAddingSession && (
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsAddingSession(true)}
+                  className="h-9 px-3.5 rounded-xl border border-dashed border-slate-300 bg-white hover:bg-slate-50 text-[13px] font-semibold text-slate-700 cursor-pointer flex items-center gap-1.5 transition-colors"
+                >
+                  <Plus className="size-3.5 text-slate-500" />
+                  <span>Add Another Checkpoint</span>
+                </button>
+              </div>
+            )}
+
+            {/* Sub-Card Form Tambah Checkpoint yang Terstruktur & Rapi */}
+            {isAddingSession && (
+              <div className="mt-2 p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-3 animate-in fade-in duration-150">
+                <div className="flex items-center justify-between">
+                  <span className="text-[12px] font-bold text-slate-800 uppercase tracking-wider">
+                    Add New Checkpoint
+                  </span>
                   <button
                     type="button"
                     onClick={() => setIsAddingSession(false)}
-                    className="h-8.5 px-2.5 rounded-lg text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
+                    className="p-1 text-slate-400 hover:text-slate-600 rounded-md cursor-pointer transition-colors"
+                    title="Close"
                   >
-                    Cancel
+                    <X className="size-4" />
                   </button>
                 </div>
-              </form>
+
+                <form onSubmit={handleCreateSession} className="space-y-2.5">
+                  <div className="space-y-1">
+                    <label className="text-[12px] font-semibold text-slate-700 block">
+                      Checkpoint Name
+                    </label>
+                    <input
+                      type="text"
+                      value={newSessionName}
+                      onChange={(e) => setNewSessionName(e.target.value)}
+                      placeholder="e.g. Entrance Gate, Lunch, Seminar Room..."
+                      className="w-full h-10 px-3.5 bg-white border border-slate-300 rounded-lg text-[13.5px] text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 transition-all shadow-2xs"
+                      autoFocus
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[12px] font-semibold text-slate-700 block">
+                      Verification Purpose
+                    </label>
+                    <select
+                      value={newSessionType}
+                      onChange={(e) => setNewSessionType(e.target.value as SessionType)}
+                      className="w-full h-10 px-3 bg-white border border-slate-300 rounded-lg text-[13px] text-slate-800 focus:outline-none focus:border-slate-900 cursor-pointer shadow-2xs"
+                    >
+                      <option value="checkin">Gate Check-In (Standard Entrance)</option>
+                      <option value="redemption">Voucher / Meal Claim (One-time Redemption)</option>
+                    </select>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setIsAddingSession(false)}
+                      className="h-9 px-4 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 text-[13px] font-semibold cursor-pointer transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="h-9 px-4.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[13px] font-bold shadow-2xs cursor-pointer transition-colors flex items-center justify-center"
+                    >
+                      Save Checkpoint
+                    </button>
+                  </div>
+                </form>
+              </div>
             )}
           </div>
         )}
@@ -325,7 +430,7 @@ export function GateScannerView({
               />
 
               {/* Input Bar Tiket */}
-              <div className="pt-1">
+              <div className="pt-1.5">
                 <form onSubmit={handleManualInputSubmit} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                   <div className="flex-1 min-w-0">
                     <input
@@ -333,12 +438,12 @@ export function GateScannerView({
                       value={manualTicketInput}
                       onChange={(e) => setManualTicketInput(e.target.value)}
                       placeholder={`Enter ticket code (e.g. ${eventCode || "EVENT"}:TKT-001)...`}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-800 font-mono focus:outline-none focus:bg-white focus:border-slate-400"
+                      className="w-full h-11 px-3.5 rounded-xl border border-slate-300 bg-slate-50/70 focus:bg-white text-xs sm:text-sm font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 transition-all shadow-2xs"
                     />
                   </div>
                   <button
                     type="submit"
-                    className="h-9 px-4 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer transition-colors flex items-center justify-center shrink-0"
+                    className="h-11 px-5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs sm:text-sm font-bold cursor-pointer transition-colors flex items-center justify-center shrink-0 shadow-2xs"
                   >
                     Verify Ticket
                   </button>
@@ -352,7 +457,7 @@ export function GateScannerView({
                 value={manualSearchQuery}
                 onChange={(e) => setManualSearchQuery(e.target.value)}
                 placeholder="Search attendee by name, code, or organization..."
-                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-800 focus:outline-none focus:bg-white focus:border-slate-400"
+                className="w-full h-11 px-3.5 rounded-xl border border-slate-300 bg-slate-50/70 focus:bg-white text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 transition-all shadow-2xs"
               />
 
               {attendees.length === 0 ? (

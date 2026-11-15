@@ -27,7 +27,24 @@ const WEBHOOK_REGISTRY_KEY = "formsync_webhook_registry";
 export function saveWebhookMapping(eventCode: string, webhookUrl: string): void {
   if (!eventCode || !webhookUrl || typeof window === "undefined") return;
   const cleanCode = normalizeEventCode(eventCode);
-  const cleanUrl = webhookUrl.trim();
+  let cleanUrl = webhookUrl.trim();
+
+  // Ekstrak parameter 'wh' secara cerdas jika pengguna menempelkan link scanner penuh
+  if (cleanUrl.includes("wh=")) {
+    try {
+      const parsedUrl = new URL(cleanUrl);
+      const extractedWh = parsedUrl.searchParams.get("wh");
+      if (extractedWh && extractedWh.includes("script.google.com")) {
+        cleanUrl = decodeURIComponent(extractedWh);
+      }
+    } catch {}
+  }
+
+  // Jika URL adalah link portal formsync tanpa backend script.google.com, jangan simpan sebagai webhook
+  if (cleanUrl.includes("formsync.my.id") && !cleanUrl.includes("script.google.com")) {
+    return;
+  }
+
   try {
     const raw = localStorage.getItem(WEBHOOK_REGISTRY_KEY);
     const registry: Record<string, string> = raw ? JSON.parse(raw) : {};
@@ -46,10 +63,67 @@ export function getWebhookForEvent(eventCode: string): string | null {
     const raw = localStorage.getItem(WEBHOOK_REGISTRY_KEY);
     if (!raw) return null;
     const registry: Record<string, string> = JSON.parse(raw);
-    return registry[cleanCode] || null;
+    const val = registry[cleanCode] || null;
+
+    // Self-healing: jika sebelumnya sempat tersimpan link formsync bukan webhook asli atau URL mati, bersihkan
+    if (val && (val.includes("formsync.my.id") && !val.includes("script.google.com") || val.includes("AKfycby_4eb"))) {
+      delete registry[cleanCode];
+      localStorage.setItem(WEBHOOK_REGISTRY_KEY, JSON.stringify(registry));
+      return null;
+    }
+
+    return val;
   } catch {
     return null;
   }
+}
+
+/**
+ * Menghapus pemetaan Webhook URL untuk Event Code tertentu.
+ */
+export function removeWebhookMapping(eventCode: string): void {
+  if (!eventCode || typeof window === "undefined") return;
+  const cleanCode = normalizeEventCode(eventCode);
+  try {
+    const raw = localStorage.getItem(WEBHOOK_REGISTRY_KEY);
+    if (!raw) return;
+    const registry: Record<string, string> = JSON.parse(raw);
+    delete registry[cleanCode];
+    localStorage.setItem(WEBHOOK_REGISTRY_KEY, JSON.stringify(registry));
+  } catch {}
+}
+
+/**
+ * Menghapus konfigurasi acara dan pemetaan webhook dari storage lokal perangkat.
+ *
+ * @param eventCode - Kode acara 8-digit
+ */
+export function removeEventFromStorage(eventCode: string): void {
+  if (!eventCode || typeof window === "undefined") return;
+  const cleanCode = normalizeEventCode(eventCode);
+  try {
+    localStorage.removeItem(getStorageKey(cleanCode));
+    removeWebhookMapping(cleanCode);
+  } catch {}
+}
+
+/**
+ * Memeriksa apakah suatu kode acara telah berpasangan (paired) dengan Webhook Google Sheets
+ * dan siap diakses di perangkat ini.
+ *
+ * @param eventCode - Kode acara 8-digit
+ * @returns boolean
+ */
+export function isEventWorkspacePaired(eventCode: string): boolean {
+  if (!eventCode || !eventCode.trim() || typeof window === "undefined") return false;
+  const event = loadEventFromStorage(eventCode);
+  const webhook = getWebhookForEvent(eventCode) || event?.spreadsheetWebhookUrl;
+
+  if (!event || !webhook) return false;
+  if (webhook.includes("AKfycby_4eb")) return false;
+  if (!webhook.startsWith("https://script.google.com/macros/s/")) return false;
+
+  return true;
 }
 
 /**
@@ -185,6 +259,9 @@ export function loadEventFromStorage(
 
     parsed.sessions = parsed.sessions || [];
     parsed.attendees = parsed.attendees || [];
+    if (parsed.spreadsheetWebhookUrl && parsed.spreadsheetWebhookUrl.includes("AKfycby_4eb")) {
+      parsed.spreadsheetWebhookUrl = "";
+    }
     if (!parsed.spreadsheetWebhookUrl) {
       const mappedWh = getWebhookForEvent(eventCode);
       if (mappedWh) parsed.spreadsheetWebhookUrl = mappedWh;
@@ -426,10 +503,30 @@ export function addSessionToEvent(
   type: SessionType = "checkin",
   description?: string
 ): WorkspaceEventConfig {
+  const cleanName = name.trim();
+  const existing = (event.sessions || []).find(
+    (s) => s.name.trim().toLowerCase() === cleanName.toLowerCase()
+  );
+
+  // Idempotensi: Jika sesi dengan nama yang sama sudah ada, aktifkan sesi tersebut tanpa duplikasi
+  if (existing) {
+    const updatedSessions = (event.sessions || []).map((s) =>
+      s.id === existing.id ? { ...s, isActive: true } : s
+    );
+    const updatedEvent: WorkspaceEventConfig = {
+      ...event,
+      sessions: updatedSessions,
+      activeSessionId: existing.id,
+      updatedAt: new Date().toISOString(),
+    };
+    saveEventToStorage(updatedEvent);
+    return updatedEvent;
+  }
+
   const newId = `sess_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
   const newSession: AttendanceSession = {
     id: newId,
-    name: name.trim(),
+    name: cleanName,
     type,
     isActive: true,
     description: description?.trim(),
@@ -479,7 +576,13 @@ export function deleteSessionFromEvent(
   event: WorkspaceEventConfig,
   sessionId: string
 ): WorkspaceEventConfig {
-  const updatedSessions = (event.sessions || []).filter((s) => s.id !== sessionId);
+  const target = (event.sessions || []).find((s) => s.id === sessionId);
+  const targetNameLower = target?.name ? target.name.trim().toLowerCase() : "";
+  const updatedSessions = (event.sessions || []).filter((s) => {
+    if (s.id === sessionId) return false;
+    if (targetNameLower && s.name && s.name.trim().toLowerCase() === targetNameLower) return false;
+    return true;
+  });
   const remainingActiveId =
     event.activeSessionId === sessionId
       ? updatedSessions[0]?.id || ""

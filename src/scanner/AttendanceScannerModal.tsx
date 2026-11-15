@@ -75,8 +75,8 @@ export function AttendanceScannerModal({
             </div>
           </div>
 
-          {/* Zero-Dot Ratio Badge (Bebas simbol bullet dot) */}
-          <div className="px-3 py-1.5 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700 text-xs font-semibold tracking-tight">
+          {/* Ratio Text Bersih Tanpa Kontainer Pembungkus */}
+          <div className="text-xs font-bold text-emerald-700 tracking-tight">
             Present: {stats.present} / {stats.total} ({percentage}%)
           </div>
         </div>

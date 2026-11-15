@@ -72,8 +72,8 @@ export const PinLockScreen: React.FC<PinLockScreenProps> = ({
             /* Mode 1: Verifikasi PIN */
             <>
               <div className="text-center space-y-3">
-                <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-rose-50 border border-rose-100 text-[#ea1d25] mb-1">
-                  <KeyRound className="w-6 h-6" />
+                <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-slate-100 border border-slate-200 text-slate-800 mb-1">
+                  <KeyRound className="w-5 h-5" />
                 </div>
                 <div>
                   <h2 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight">
@@ -88,7 +88,7 @@ export const PinLockScreen: React.FC<PinLockScreenProps> = ({
                 <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700">
                   <span className="font-semibold text-slate-500">Event:</span>
                   <span className="font-bold text-slate-900">{eventName}</span>
-                  <span className="font-mono font-bold text-slate-600 bg-white border border-slate-200 px-2 py-0.5 rounded-md">
+                  <span className="font-mono font-bold text-slate-900 bg-white border border-slate-200 px-2 py-0.5 rounded-md">
                     {eventCode}
                   </span>
                 </div>
@@ -114,6 +114,7 @@ export const PinLockScreen: React.FC<PinLockScreenProps> = ({
                   <div className="relative">
                     <input
                       type={showPin ? "text" : "password"}
+                      inputMode="numeric"
                       maxLength={12}
                       value={pinInput}
                       onChange={(e) => {
@@ -122,11 +123,13 @@ export const PinLockScreen: React.FC<PinLockScreenProps> = ({
                       }}
                       placeholder="Enter 4-8 digit PIN"
                       autoFocus
-                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-center text-xl text-slate-900 font-mono tracking-widest focus:bg-white focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 transition-all placeholder:text-slate-300"
+                      autoComplete="new-password"
+                      spellCheck={false}
+                      className="w-full h-12 bg-slate-50 border border-slate-300 rounded-xl px-4 text-center text-lg sm:text-xl text-slate-900 font-mono font-bold tracking-[0.25em] focus:bg-white focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 transition-all placeholder:text-slate-400 placeholder:tracking-normal placeholder:font-normal placeholder:text-sm shadow-2xs"
                     />
                   </div>
 
-                  {error && (
+                  {typeof error === "string" && Boolean(error.trim()) && (
                     <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium leading-relaxed">
                       {error}
                     </div>
@@ -192,7 +195,7 @@ export const PinLockScreen: React.FC<PinLockScreenProps> = ({
                     className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-center text-xl text-slate-900 font-mono font-bold tracking-widest focus:bg-white focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 transition-all uppercase placeholder:text-slate-300"
                   />
 
-                  {error && (
+                  {typeof error === "string" && Boolean(error.trim()) && (
                     <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium leading-relaxed">
                       {error}
                     </div>

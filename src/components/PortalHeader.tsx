@@ -2,7 +2,7 @@ import React from "react";
 import { FormSyncBrandLogo } from "./FormSyncBrandLogo";
 
 export interface PortalHeaderProps {
-  badgeText: string;
+  badgeText?: string;
 }
 
 /**
@@ -18,9 +18,11 @@ export const PortalHeader: React.FC<PortalHeaderProps> = ({ badgeText }) => {
           FormSync Portal
         </h1>
       </div>
-      <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider bg-slate-100 border border-slate-200 px-2.5 py-0.5 rounded-full">
-        {badgeText}
-      </span>
+      {badgeText ? (
+        <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider bg-slate-100 border border-slate-200 px-2.5 py-0.5 rounded-full">
+          {badgeText}
+        </span>
+      ) : null}
     </div>
   );
 };

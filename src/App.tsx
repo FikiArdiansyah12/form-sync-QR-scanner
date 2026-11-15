@@ -24,9 +24,11 @@ import {
   addSessionToEvent,
   deleteSessionFromEvent,
   isEventWorkspaceExists,
+  isEventWorkspacePaired,
   registerWorkspaceEvent,
   saveWebhookMapping,
   getWebhookForEvent,
+  removeEventFromStorage,
   DEFAULT_DEMO_EVENT,
 } from "./core/storage";
 import {
@@ -36,11 +38,17 @@ import {
   setEventUnlockedInSession,
   clearEventUnlockedInSession,
 } from "./core/securityLock";
-import { validateEventCodeFormat } from "./core/eventCodeGenerator";
+import { validateEventCodeFormat, formatEventCodeWithHyphen } from "./core/eventCodeGenerator";
 import {
   testSpreadsheetConnectivity,
   fetchEventFromSpreadsheet,
   syncCheckInToSpreadsheet,
+  syncRevertCheckInToSpreadsheet,
+  syncCreateSessionToSpreadsheet,
+  syncDeleteSessionToSpreadsheet,
+  syncToggleSessionToSpreadsheet,
+  mergeRemoteAttendees,
+  SpreadsheetFetchResponse,
 } from "./bridge/spreadsheetSync";
 import { FormSyncBrandLogo } from "./components/FormSyncBrandLogo";
 import { AttendanceLogo } from "./components/BrandLogos";
@@ -87,7 +95,7 @@ export function FormSyncApp() {
       const reg = params.get("reg");
       const wh = params.get("wh");
       return {
-        eventCode: code && validateEventCodeFormat(code) ? code.toUpperCase() : "",
+        eventCode: code && validateEventCodeFormat(code) ? formatEventCodeWithHyphen(code) : "",
         initialTab: tab && ["scanner", "matrix", "directory"].includes(tab) ? tab : "scanner",
         isFromSheets: origin === "sheets" || reg === "1",
         webhookUrl: wh ? decodeURIComponent(wh) : "",
@@ -102,6 +110,11 @@ export function FormSyncApp() {
   }, []);
 
   const [activeEventCode, setActiveEventCode] = useState<string>("");
+  const activeEventCodeRef = React.useRef(activeEventCode);
+  useEffect(() => {
+    activeEventCodeRef.current = activeEventCode;
+  }, [activeEventCode]);
+
   const [codeInput, setCodeInput] = useState<string>("");
   const [codeError, setCodeError] = useState<string | null>(null);
   const [connectInitialError, setConnectInitialError] = useState<string | null>(null);
@@ -122,6 +135,136 @@ export function FormSyncApp() {
   // State Filter & Search Direktori
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<FilterStatus>("all");
+  const [isSyncingRecords, setIsSyncingRecords] = useState(false);
+
+  // Pelindung race condition: melacak checkpoint dan status presensi yang baru saja dimutasi (30 detik)
+  // agar polling in-flight atau cache browser tidak mengembalikan status/checkpoint lama.
+  const sessionTombstonesRef = React.useRef<Map<string, number>>(new Map());
+  const pendingSessionAddsRef = React.useRef<Map<string, { session: AttendanceSession; timestamp: number }>>(new Map());
+  const activeSessionMutationCountRef = React.useRef<number>(0);
+
+  interface CheckInOverrideEntry {
+    ticketCode: string;
+    sessionId: string; // '__ALL__' untuk revert global
+    action: "present" | "reverted";
+    checkInTime?: string;
+    timestamp: number;
+  }
+  const pendingCheckInOverridesRef = React.useRef<Map<string, CheckInOverrideEntry>>(new Map());
+  const activeCheckInMutationCountRef = React.useRef<number>(0);
+
+  const filterSessionsAgainstTombstones = React.useCallback((sessionsList: AttendanceSession[]) => {
+    const now = Date.now();
+    for (const [key, ts] of sessionTombstonesRef.current.entries()) {
+      if (now - ts > 30000) {
+        sessionTombstonesRef.current.delete(key);
+      }
+    }
+    return sessionsList.filter((s) => {
+      if (!s) return false;
+      const idDeleted = sessionTombstonesRef.current.has(`id:${s.id}`);
+      const nameDeleted = s.name ? sessionTombstonesRef.current.has(`name:${s.name.trim().toLowerCase()}`) : false;
+      return !idDeleted && !nameDeleted;
+    });
+  }, []);
+
+  const applySafeRemoteMerge = React.useCallback(
+    (prev: WorkspaceEventConfig, remote: SpreadsheetFetchResponse): WorkspaceEventConfig => {
+      const merged = mergeRemoteAttendees(prev, remote);
+      const now = Date.now();
+      for (const [key, item] of pendingSessionAddsRef.current.entries()) {
+        if (now - item.timestamp > 20000) {
+          pendingSessionAddsRef.current.delete(key);
+        }
+      }
+      for (const [key, entry] of pendingCheckInOverridesRef.current.entries()) {
+        if (now - entry.timestamp > 30000) {
+          pendingCheckInOverridesRef.current.delete(key);
+        }
+      }
+
+      // Overlay mutasi presensi yang sedang berlangsung atau dalam masa perlindungan 30 detik
+      let safeAttendees = merged.attendees || [];
+      if (activeCheckInMutationCountRef.current > 0) {
+        safeAttendees = prev.attendees;
+      } else if (pendingCheckInOverridesRef.current.size > 0) {
+        safeAttendees = safeAttendees.map((att) => {
+          const cleanTkt = att.ticketCode.trim().toUpperCase();
+          const globalRevert = pendingCheckInOverridesRef.current.get(`${cleanTkt}::__ALL__`);
+          if (globalRevert && globalRevert.action === "reverted") {
+            return { ...att, status: "pending" as const, checkInTime: undefined, sessions: {} };
+          }
+          let nextAtt = att;
+          for (const entry of pendingCheckInOverridesRef.current.values()) {
+            if (entry.ticketCode !== cleanTkt || entry.sessionId === "__ALL__") continue;
+            const nextSessions = { ...(nextAtt.sessions || {}) };
+            if (entry.action === "reverted") {
+              delete nextSessions[entry.sessionId];
+            } else {
+              nextSessions[entry.sessionId] = {
+                status: "present",
+                checkInTime: entry.checkInTime || new Date().toTimeString().split(" ")[0],
+              };
+            }
+            const hasActive = Object.values(nextSessions).some(
+              (s) => s.status === "present" || s.status === "claimed"
+            );
+            nextAtt = {
+              ...nextAtt,
+              status: hasActive ? ("present" as const) : ("pending" as const),
+              checkInTime: hasActive ? nextAtt.checkInTime : undefined,
+              sessions: nextSessions,
+            };
+          }
+          return nextAtt;
+        });
+      }
+
+      if (activeSessionMutationCountRef.current > 0) {
+        return { ...merged, sessions: prev.sessions, attendees: safeAttendees };
+      }
+
+      let safeSessions = filterSessionsAgainstTombstones(merged.sessions || []);
+
+      for (const [, item] of pendingSessionAddsRef.current.entries()) {
+        const alreadyPresent = safeSessions.some(
+          (s) => s.id === item.session.id || s.name.trim().toLowerCase() === item.session.name.trim().toLowerCase()
+        );
+        if (!alreadyPresent) {
+          safeSessions = [...safeSessions, item.session];
+        }
+      }
+
+      return { ...merged, sessions: safeSessions, attendees: safeAttendees };
+    },
+    [filterSessionsAgainstTombstones]
+  );
+
+  const handleSyncRecords = async () => {
+    const code = activeEventCodeRef.current || activeEventCode;
+    if (!code) return;
+    const webhookUrl = eventConfig?.spreadsheetWebhookUrl || getWebhookForEvent(code);
+    if (!webhookUrl) {
+      setIsSettingsOpen(true);
+      return;
+    }
+    setIsSyncingRecords(true);
+    try {
+      const res = await fetchEventFromSpreadsheet(webhookUrl, code);
+      if (res.success && res.attendees) {
+        setEventConfig((prev) => {
+          if (!prev) return prev;
+          const merged = applySafeRemoteMerge(prev, res);
+          saveEventToStorage(merged);
+          return merged;
+        });
+      }
+    } catch (e) {
+      console.warn("Manual sync error:", e);
+    } finally {
+      setIsSyncingRecords(false);
+    }
+  };
 
   const refreshEventData = (code: string) => {
     if (!code || !code.trim()) {
@@ -136,32 +279,79 @@ export function FormSyncApp() {
   useEffect(() => {
     if (!urlParams.eventCode) return;
     const code = urlParams.eventCode;
-    const exists = isEventWorkspaceExists(code);
 
-    if (exists) {
-      setActiveEventCode(code);
-      refreshEventData(code);
-      setIsUnlocked(isEventUnlockedInSession(code));
-    } else if (urlParams.isFromSheets) {
-      // Terverifikasi dibuka dari Google Sheets Add-on resmi
-      const newEv = registerWorkspaceEvent(code, { origin: "sheets" });
-      if (urlParams.webhookUrl) {
-        newEv.spreadsheetWebhookUrl = urlParams.webhookUrl;
-        saveWebhookMapping(code, urlParams.webhookUrl);
-        saveEventToStorage(newEv);
+    // 1. Jika dibuka langsung dari Google Sheets Add-on resmi dengan parameter webhook terlampir:
+    if (urlParams.isFromSheets && urlParams.webhookUrl && urlParams.webhookUrl.startsWith("https://script.google.com/macros/s/")) {
+      let currentEv = loadEventFromStorage(code);
+      if (!currentEv) {
+        currentEv = registerWorkspaceEvent(code, { origin: "sheets" });
       }
+      currentEv.spreadsheetWebhookUrl = urlParams.webhookUrl;
+      saveWebhookMapping(code, urlParams.webhookUrl);
+      saveEventToStorage(currentEv);
+
       setActiveEventCode(code);
       refreshEventData(code);
-      setIsUnlocked(true);
-    } else {
-      // Tolak seketika: bukan dari Sheets dan belum pernah terdaftar
-      setActiveEventCode("");
-      setEventConfig(null);
-      setConnectInitialError(
-        `Event Code '${code}' was not found. Please open the scanner link directly from your FormSync Google Sheets add-on.`
-      );
-      updateBrowserUrlEvent(null);
+      const isPinRequired = isEventPinProtected(currentEv.pin);
+      setIsUnlocked(!isPinRequired || isEventUnlockedInSession(code));
+
+      // Auto-fetch data peserta langsung dari spreadsheet
+      fetchEventFromSpreadsheet(urlParams.webhookUrl, code)
+        .then((fetchRes) => {
+          if (fetchRes.success && fetchRes.attendees) {
+            const loaded = loadEventFromStorage(code);
+            if (loaded) {
+              const merged = applySafeRemoteMerge(loaded, fetchRes);
+              saveEventToStorage(merged);
+              setEventConfig(merged);
+            }
+          }
+        })
+        .catch((err) => console.warn("Initial sheets attendee fetch error:", err));
+      return;
     }
+
+    // 2. Jika kode acara sudah pernah berpasangan (paired) dengan Webhook aktif di perangkat ini:
+    const isPaired = isEventWorkspacePaired(code);
+    if (isPaired) {
+      if (urlParams.webhookUrl && urlParams.webhookUrl.startsWith("https://script.google.com/macros/s/")) {
+        const currentEv = loadEventFromStorage(code);
+        if (currentEv && currentEv.spreadsheetWebhookUrl !== urlParams.webhookUrl) {
+          currentEv.spreadsheetWebhookUrl = urlParams.webhookUrl;
+          saveWebhookMapping(code, urlParams.webhookUrl);
+          saveEventToStorage(currentEv);
+        }
+      }
+      const loaded = loadEventFromStorage(code);
+      setActiveEventCode(code);
+      refreshEventData(code);
+      const isPinRequired = Boolean(loaded && isEventPinProtected(loaded.pin));
+      setIsUnlocked(!isPinRequired || isEventUnlockedInSession(code));
+
+      // Jika data peserta masih kosong, coba sinkronkan otomatis di background
+      const targetWh = (loaded && loaded.spreadsheetWebhookUrl) || getWebhookForEvent(code);
+      if (targetWh && (!loaded || !loaded.attendees || loaded.attendees.length === 0)) {
+        fetchEventFromSpreadsheet(targetWh, code)
+          .then((fetchRes) => {
+            if (fetchRes.success && fetchRes.attendees) {
+              const cur = loadEventFromStorage(code);
+              if (cur) {
+                const merged = applySafeRemoteMerge(cur, fetchRes);
+                saveEventToStorage(merged);
+                setEventConfig(merged);
+              }
+            }
+          })
+          .catch(() => {});
+      }
+      return;
+    }
+
+    // 3. Jika kode acara belum pernah terpasang dengan Webhook:
+    // Arahkan ke ConnectEventScreen bersih (defaultEventCode terisi otomatis) agar pengguna diminta memasukkan Webhook URL
+    setActiveEventCode("");
+    setEventConfig(null);
+    setConnectInitialError(null);
   }, [urlParams]);
 
   const handleConnectEvent = (code: string): ConnectResult => {
@@ -191,6 +381,9 @@ export function FormSyncApp() {
 
     setActiveEventCode(formatted);
     refreshEventData(formatted);
+    const loaded = loadEventFromStorage(formatted);
+    const isPinRequired = Boolean(loaded && isEventPinProtected(loaded.pin));
+    setIsUnlocked(!isPinRequired || isEventUnlockedInSession(formatted));
     setConnectInitialError(null);
     updateBrowserUrlEvent(formatted);
     return { success: true };
@@ -225,11 +418,18 @@ export function FormSyncApp() {
     return { success: true };
   };
 
-  const handleDisconnectEvent = () => {
+  const handleDisconnectEvent = (reasonMsg?: unknown) => {
+    const codeToClean = activeEventCodeRef.current || activeEventCode;
+    if (codeToClean) {
+      removeEventFromStorage(codeToClean);
+      clearEventUnlockedInSession(codeToClean);
+    }
     setActiveEventCode("");
     setEventConfig(null);
     setIsUnlocked(false);
-    setConnectInitialError(null);
+    setIsSettingsOpen(false);
+    const cleanReason = typeof reasonMsg === "string" && reasonMsg.trim() ? reasonMsg.trim() : null;
+    setConnectInitialError(cleanReason);
     updateBrowserUrlEvent(null);
   };
 
@@ -262,6 +462,84 @@ export function FormSyncApp() {
       setIsUnlocked(false);
     }
   };
+
+  // Periodic Heartbeat & Visibility Health-Check ke Google Sheets
+  useEffect(() => {
+    if (!activeEventCode || !eventConfig?.spreadsheetWebhookUrl) {
+      return;
+    }
+
+    const webhookUrl = eventConfig.spreadsheetWebhookUrl;
+    const currentCode = activeEventCode;
+    let isCancelled = false;
+
+    const verifyWorkspaceHealth = async () => {
+      // Hanya lakukan verifikasi jika dokumen terlihat untuk menghemat kuota GAS
+      if (typeof document !== "undefined" && document.hidden) {
+        return;
+      }
+      try {
+        const check = await fetchEventFromSpreadsheet(webhookUrl, currentCode);
+        if (isCancelled) return;
+        if (
+          check.error === "WORKSPACE_DISCONNECTED" ||
+          (check.message && check.message.toLowerCase().includes("disconnected by the administrator"))
+        ) {
+          handleDisconnectEvent(check.message || "This event workspace has been disconnected by the administrator.");
+          return;
+        }
+
+        // Sinkronkan data peserta & sesi secara transparan
+        if (check.success && Array.isArray(check.attendees)) {
+          setEventConfig((prev) => {
+            if (!prev) return prev;
+            const merged = applySafeRemoteMerge(prev, check);
+            saveEventToStorage(merged);
+            return merged;
+          });
+        }
+      } catch {
+        // Abaikan kegagalan jaringan sesaat
+      }
+    };
+
+    // Verifikasi awal setelah 2 detik untuk memastikan workspace yang baru dimuat masih valid
+    const initialVerifyTimeout = setTimeout(() => {
+      verifyWorkspaceHealth();
+    }, 2000);
+
+    // Polling berkala setiap 25 detik
+    const timer = setInterval(verifyWorkspaceHealth, 25000);
+
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        verifyWorkspaceHealth();
+      }
+    };
+
+    const handleWindowFocus = () => {
+      verifyWorkspaceHealth();
+    };
+
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
+    if (typeof window !== "undefined") {
+      window.addEventListener("focus", handleWindowFocus);
+    }
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(initialVerifyTimeout);
+      clearInterval(timer);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
+      if (typeof window !== "undefined") {
+        window.removeEventListener("focus", handleWindowFocus);
+      }
+    };
+  }, [activeEventCode, eventConfig?.spreadsheetWebhookUrl]);
 
   // Bersihkan data dummy residu lama dari seluruh localStorage
   useEffect(() => {
@@ -309,6 +587,102 @@ export function FormSyncApp() {
     return calculateAttendanceStats(attendees);
   }, [attendees]);
 
+  // Helper terpusat untuk sinkronisasi Check-In ke Google Sheets dengan pelindung race-condition
+  const syncCheckInRecord = (
+    updatedEvent: WorkspaceEventConfig,
+    ticketCode: string,
+    targetSessionId: string,
+    checkInTime?: string
+  ) => {
+    const cleanTkt = ticketCode.trim().toUpperCase();
+    const targetSess = (updatedEvent.sessions || []).find((s) => s.id === targetSessionId);
+    const resolvedTime = checkInTime || new Date().toTimeString().split(" ")[0];
+
+    pendingCheckInOverridesRef.current.delete(`${cleanTkt}::__ALL__`);
+    pendingCheckInOverridesRef.current.set(`${cleanTkt}::${targetSessionId || "default"}`, {
+      ticketCode: cleanTkt,
+      sessionId: targetSessionId,
+      action: "present",
+      checkInTime: resolvedTime,
+      timestamp: Date.now(),
+    });
+
+    if (!updatedEvent.spreadsheetWebhookUrl) return;
+
+    activeCheckInMutationCountRef.current += 1;
+    syncCheckInToSpreadsheet(updatedEvent.spreadsheetWebhookUrl, {
+      action: "session_checkin",
+      eventCode: updatedEvent.eventCode,
+      ticketCode: ticketCode,
+      securitySecret: updatedEvent.securitySecret,
+      sessionId: targetSessionId,
+      sessionName: targetSess?.name,
+      checkInTime: resolvedTime,
+    })
+      .then((syncRes) => {
+        if (syncRes && syncRes.error === "WORKSPACE_DISCONNECTED") {
+          handleDisconnectEvent("This workspace has been disconnected by the administrator.");
+          return;
+        }
+        if (syncRes && syncRes.success && Array.isArray(syncRes.sessions)) {
+          setEventConfig((prev) => {
+            if (!prev) return prev;
+            const filtered = filterSessionsAgainstTombstones(syncRes.sessions || []);
+            const synced = { ...prev, sessions: filtered };
+            saveEventToStorage(synced);
+            return synced;
+          });
+        }
+      })
+      .catch((err) => console.warn("Background sheet sync error:", err))
+      .finally(() => {
+        activeCheckInMutationCountRef.current = Math.max(0, activeCheckInMutationCountRef.current - 1);
+      });
+  };
+
+  // Helper terpusat untuk sinkronisasi Undo / Revert presensi ke Google Sheets
+  const syncRevertRecord = (
+    currentEvent: WorkspaceEventConfig,
+    attendeeId: string,
+    sessionId?: string
+  ) => {
+    const targetAttendee = (currentEvent.attendees || []).find((a) => a.id === attendeeId);
+    if (!targetAttendee || !targetAttendee.ticketCode) return;
+
+    const cleanTkt = targetAttendee.ticketCode.trim().toUpperCase();
+    const overrideKey = `${cleanTkt}::${sessionId || "__ALL__"}`;
+    const targetSess = sessionId
+      ? (currentEvent.sessions || []).find((s) => s.id === sessionId)
+      : undefined;
+
+    pendingCheckInOverridesRef.current.set(overrideKey, {
+      ticketCode: cleanTkt,
+      sessionId: sessionId || "__ALL__",
+      action: "reverted",
+      timestamp: Date.now(),
+    });
+
+    if (!currentEvent.spreadsheetWebhookUrl) return;
+
+    activeCheckInMutationCountRef.current += 1;
+    syncRevertCheckInToSpreadsheet(currentEvent.spreadsheetWebhookUrl, {
+      eventCode: currentEvent.eventCode,
+      ticketCode: targetAttendee.ticketCode,
+      securitySecret: currentEvent.securitySecret,
+      sessionId: sessionId || "",
+      sessionName: targetSess?.name || "",
+    })
+      .then((syncRes) => {
+        if (syncRes && syncRes.error === "WORKSPACE_DISCONNECTED") {
+          handleDisconnectEvent("This workspace has been disconnected by the administrator.");
+        }
+      })
+      .catch((err) => console.warn("Background revert sync error:", err))
+      .finally(() => {
+        activeCheckInMutationCountRef.current = Math.max(0, activeCheckInMutationCountRef.current - 1);
+      });
+  };
+
   // Handler Check-In Umum
   const handleCheckIn = (ticketCode: string): CheckInValidationResult => {
     if (!eventConfig) {
@@ -317,14 +691,8 @@ export function FormSyncApp() {
     const { result, updatedEvent } = processCheckIn(eventConfig, ticketCode);
     setEventConfig(updatedEvent);
 
-    // Sinkronkan ke spreadsheet secara asinkron jika Webhook URL terhubung
-    if (result.success && updatedEvent.spreadsheetWebhookUrl) {
-      syncCheckInToSpreadsheet(updatedEvent.spreadsheetWebhookUrl, {
-        eventCode: updatedEvent.eventCode,
-        ticketCode: ticketCode,
-        securitySecret: updatedEvent.securitySecret,
-        checkInTime: result.attendee?.checkInTime,
-      }).catch((err) => console.warn("Background sheet sync error:", err));
+    if (result.success) {
+      syncCheckInRecord(updatedEvent, ticketCode, selectedSessionId || "", result.attendee?.checkInTime);
     }
 
     return result;
@@ -341,42 +709,157 @@ export function FormSyncApp() {
     const { result, updatedEvent } = processSessionCheckIn(eventConfig, ticketCode, sessionId);
     setEventConfig(updatedEvent);
 
-    // Sinkronkan ke spreadsheet secara asinkron jika Webhook URL terhubung
-    if (result.success && updatedEvent.spreadsheetWebhookUrl) {
-      syncCheckInToSpreadsheet(updatedEvent.spreadsheetWebhookUrl, {
-        eventCode: updatedEvent.eventCode,
-        ticketCode: ticketCode,
-        securitySecret: updatedEvent.securitySecret,
-        checkInTime: result.attendee?.sessions?.[sessionId]?.checkInTime || new Date().toTimeString().split(" ")[0],
-      }).catch((err) => console.warn("Background sheet sync error:", err));
+    if (result.success) {
+      syncCheckInRecord(
+        updatedEvent,
+        ticketCode,
+        sessionId,
+        result.attendee?.sessions?.[sessionId]?.checkInTime
+      );
     }
 
     return result;
   };
 
-  // Handler Revert Sesi
+  // Handler Revert Sesi (dari Scanner atau Cross-Check Matrix)
   const handleRevertSession = (attendeeId: string, sessionId: string) => {
     if (!eventConfig) return;
     const updated = revertCheckIn(eventConfig, attendeeId, sessionId);
     setEventConfig(updated);
+    syncRevertRecord(eventConfig, attendeeId, sessionId);
+  };
+
+  // Handler Revert Global Peserta (dari Direktori Peserta)
+  const handleRevertAttendee = (attendeeId: string) => {
+    if (!eventConfig) return;
+    const updated = revertCheckIn(eventConfig, attendeeId);
+    setEventConfig(updated);
+    syncRevertRecord(eventConfig, attendeeId);
   };
 
   // Handler Tambah Sesi Kustom
   const handleAddSession = (name: string, type: SessionType, description?: string) => {
     if (!eventConfig) return;
+    const cleanLower = name.trim().toLowerCase();
+    sessionTombstonesRef.current.delete(`name:${cleanLower}`);
+
     const updated = addSessionToEvent(eventConfig, name, type, description);
+    saveEventToStorage(updated);
     setEventConfig(updated);
     const newestSession = updated.sessions[updated.sessions.length - 1];
     if (newestSession) {
+      sessionTombstonesRef.current.delete(`id:${newestSession.id}`);
+      pendingSessionAddsRef.current.set(`name:${cleanLower}`, {
+        session: newestSession,
+        timestamp: Date.now(),
+      });
       setSelectedSessionId(newestSession.id);
+    }
+
+    // Sinkronkan penambahan kolom sesi ke spreadsheet secara real-time
+    if (updated.spreadsheetWebhookUrl) {
+      activeSessionMutationCountRef.current += 1;
+      syncCreateSessionToSpreadsheet(updated.spreadsheetWebhookUrl, {
+        eventCode: updated.eventCode,
+        securitySecret: updated.securitySecret,
+        sessionName: name,
+        sessionType: type,
+      })
+        .then((syncRes) => {
+          if (syncRes && syncRes.error === "WORKSPACE_DISCONNECTED") {
+            handleDisconnectEvent("This workspace has been disconnected by the administrator.");
+            return;
+          }
+          if (syncRes && syncRes.success && Array.isArray(syncRes.sessions)) {
+            pendingSessionAddsRef.current.delete(`name:${cleanLower}`);
+            setEventConfig((prev) => {
+              if (!prev) return prev;
+              const filtered = filterSessionsAgainstTombstones(syncRes.sessions || []);
+              const synced = { ...prev, sessions: filtered };
+              saveEventToStorage(synced);
+              return synced;
+            });
+          }
+        })
+        .catch((err) => console.warn("Background session sync error:", err))
+        .finally(() => {
+          activeSessionMutationCountRef.current = Math.max(0, activeSessionMutationCountRef.current - 1);
+        });
     }
   };
 
   // Handler Hapus Sesi
   const handleDeleteSession = (sessionId: string) => {
     if (!eventConfig) return;
+    const targetSession = (eventConfig.sessions || []).find((s) => s.id === sessionId);
+    const sessionName = targetSession?.name || "";
+    const now = Date.now();
+    sessionTombstonesRef.current.set(`id:${sessionId}`, now);
+    if (sessionName) {
+      const lowerName = sessionName.trim().toLowerCase();
+      sessionTombstonesRef.current.set(`name:${lowerName}`, now);
+      pendingSessionAddsRef.current.delete(`name:${lowerName}`);
+    }
+
     const updated = deleteSessionFromEvent(eventConfig, sessionId);
+    saveEventToStorage(updated);
     setEventConfig(updated);
+
+    // Sinkronkan penghapusan checkpoint ke spreadsheet secara real-time
+    if (updated.spreadsheetWebhookUrl) {
+      activeSessionMutationCountRef.current += 1;
+      syncDeleteSessionToSpreadsheet(
+        updated.spreadsheetWebhookUrl,
+        updated.eventCode,
+        updated.securitySecret,
+        sessionId,
+        sessionName
+      )
+        .then((syncRes) => {
+          if (syncRes && syncRes.error === "WORKSPACE_DISCONNECTED") {
+            handleDisconnectEvent("This workspace has been disconnected by the administrator.");
+            return;
+          }
+          if (syncRes && syncRes.success && Array.isArray(syncRes.sessions)) {
+            setEventConfig((prev) => {
+              if (!prev) return prev;
+              const filtered = filterSessionsAgainstTombstones(syncRes.sessions || []);
+              const synced = { ...prev, sessions: filtered };
+              saveEventToStorage(synced);
+              return synced;
+            });
+          }
+        })
+        .catch((err) => console.warn("Background session delete sync error:", err))
+        .finally(() => {
+          activeSessionMutationCountRef.current = Math.max(0, activeSessionMutationCountRef.current - 1);
+        });
+    }
+  };
+
+  // Handler Kontrol Status Aktif / Non-Aktif Sesi Checkpoint
+  const handleToggleSessionActive = (sessionId: string, isActive: boolean) => {
+    if (!eventConfig) return;
+    const updatedSessions = (eventConfig.sessions || []).map((s) =>
+      s.id === sessionId ? { ...s, isActive } : s
+    );
+    const updated: WorkspaceEventConfig = {
+      ...eventConfig,
+      sessions: updatedSessions,
+      updatedAt: new Date().toISOString(),
+    };
+    saveEventToStorage(updated);
+    setEventConfig(updated);
+
+    if (updated.spreadsheetWebhookUrl) {
+      syncToggleSessionToSpreadsheet(
+        updated.spreadsheetWebhookUrl,
+        updated.eventCode,
+        updated.securitySecret,
+        sessionId,
+        isActive
+      ).catch((err) => console.warn("Background session toggle sync error:", err));
+    }
   };
 
   // Handler Switch Event
@@ -422,6 +905,7 @@ export function FormSyncApp() {
         onConnectEvent={handleConnectEvent}
         onRegisterFromSpreadsheet={handleRegisterFromSpreadsheet}
         initialError={connectInitialError}
+        defaultEventCode={urlParams.eventCode || ""}
       />
     );
   }
@@ -453,7 +937,7 @@ export function FormSyncApp() {
             <h1 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
               FormSync Workspace
             </h1>
-            <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-700">
+            <span className="text-xs sm:text-sm font-mono font-bold text-slate-500">
               {activeEventCode}
             </span>
           </div>
@@ -478,7 +962,7 @@ export function FormSyncApp() {
             </button>
             <button
               type="button"
-              onClick={handleDisconnectEvent}
+              onClick={() => handleDisconnectEvent()}
               className="text-xs font-semibold text-slate-500 hover:text-rose-600 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors"
               title="Close this event workspace"
             >
@@ -507,19 +991,19 @@ export function FormSyncApp() {
                   onChange={(e) => setCodeInput(e.target.value.toUpperCase())}
                   placeholder="e.g. ABCD-1234"
                   maxLength={9}
-                  className="h-8 px-2.5 w-32 rounded-lg border border-slate-300 bg-white font-mono text-slate-900 font-bold focus:outline-none focus:border-slate-800"
+                  className="h-9 px-3 w-36 rounded-xl border border-slate-300 bg-white font-mono text-xs sm:text-sm text-slate-900 font-bold focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 uppercase tracking-wider shadow-2xs"
                   autoFocus
                 />
                 <button
                   type="submit"
-                  className="h-8 px-3.5 rounded-lg bg-slate-900 text-white font-bold hover:bg-slate-800 cursor-pointer"
+                  className="h-9 px-4 rounded-xl bg-slate-900 text-white text-xs font-bold hover:bg-slate-800 cursor-pointer shadow-2xs"
                 >
                   Load
                 </button>
                 <button
                   type="button"
                   onClick={() => setIsSwitchingEvent(false)}
-                  className="h-8 px-2 text-slate-500 hover:text-slate-800 cursor-pointer"
+                  className="h-9 px-3 rounded-xl border border-slate-200 bg-white text-slate-600 hover:text-slate-900 cursor-pointer text-xs font-semibold"
                 >
                   Cancel
                 </button>
@@ -596,6 +1080,7 @@ export function FormSyncApp() {
                 onSelectSession={setSelectedSessionId}
                 onAddSession={handleAddSession}
                 onDeleteSession={handleDeleteSession}
+                onToggleSession={handleToggleSessionActive}
                 attendees={attendees}
                 onCheckInSession={handleCheckInSession}
                 onRevertSession={handleRevertSession}
@@ -633,68 +1118,59 @@ export function FormSyncApp() {
               <AttendeesTable
                 attendees={filteredAttendees}
                 onCheckIn={handleCheckIn}
-                onRevert={(id) => {
-                  if (eventConfig) setEventConfig(revertCheckIn(eventConfig, id));
-                }}
+                onRevert={handleRevertAttendee}
+                onSync={handleSyncRecords}
+                isSyncing={isSyncingRecords}
               />
             </div>
           )}
         </div>
 
-        {/* 4. Modal Footer Bar */}
-        <div className="p-3 sm:px-5 border-t border-slate-100 bg-slate-50/70 flex items-center justify-between">
-          {activeTab !== "scanner" ? (
+        {/* 4. Footer Bar: Hanya aktif di tab Matrix/Directory tanpa tombol Sync dobel */}
+        {activeTab !== "scanner" && (
+          <div className="p-3.5 sm:px-5 border-t border-slate-100 bg-slate-50/70 flex items-center justify-between pb-6 sm:pb-3.5">
             <button
               type="button"
               onClick={() => setActiveTab("scanner")}
-              className="px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 cursor-pointer transition-colors"
+              className="h-9 px-4 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700 cursor-pointer transition-colors flex items-center gap-1.5 shadow-2xs"
             >
-              Back to Scanner
-            </button>
-          ) : (
-            <div />
-          )}
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setIsSettingsOpen(true)}
-              className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer transition-colors flex items-center gap-1.5 shadow-xs"
-            >
-              <ShieldCheck className="size-3.5 text-emerald-400" />
-              <span>Sync with Sheets</span>
+              <span>Back to Scanner</span>
             </button>
           </div>
-        </div>
+        )}
       </div>
 
-      {/* Modal Sheets Sync & Webhook */}
+      {/* Modal Sheets Sync & Webhook - Fullscreen di Mobile, Card Modal di Desktop */}
       {isSettingsOpen && eventConfig && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs animate-in fade-in">
-          <div className="relative w-full max-w-xl rounded-2xl bg-white border border-slate-200 shadow-2xl p-5 overflow-y-auto max-h-[90vh]">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-200 mb-4">
+        <div className="fixed inset-0 z-50 flex items-stretch sm:items-center justify-center p-0 sm:p-4 bg-slate-900/50 backdrop-blur-xs animate-in fade-in">
+          <div className="relative w-full sm:max-w-xl bg-white sm:rounded-2xl border-0 sm:border border-slate-200 shadow-2xl flex flex-col h-full sm:h-auto sm:max-h-[90vh] overflow-hidden">
+            <div className="sticky top-0 bg-white z-10 px-4 py-3 sm:px-5 sm:py-3.5 border-b border-slate-200 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
-                <ShieldCheck className="size-4.5 text-emerald-600" />
-                <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                <ShieldCheck className="size-4 text-emerald-600" />
+                <h3 className="text-xs sm:text-sm font-bold text-slate-900 uppercase tracking-wider">
                   Google Sheets Synchronization
                 </h3>
               </div>
               <button
                 type="button"
                 onClick={() => setIsSettingsOpen(false)}
-                className="text-xs text-slate-500 hover:text-slate-900 px-2 py-1 rounded cursor-pointer"
+                className="h-8 px-3 rounded-lg border border-slate-200 hover:bg-slate-100 text-xs font-semibold text-slate-700 cursor-pointer transition-colors"
               >
                 Close
               </button>
             </div>
 
-            <WorkspaceControlPanel
-              event={eventConfig}
-              onUpdateEvent={(updated) => {
-                setEventConfig(updated);
-                setActiveEventCode(updated.eventCode);
-              }}
-            />
+            <div className="p-4 sm:p-5 overflow-y-auto flex-1">
+              <WorkspaceControlPanel
+                event={eventConfig}
+                onUpdateEvent={(updated) => {
+                  setEventConfig(updated);
+                  setActiveEventCode(updated.eventCode);
+                }}
+                onDisconnect={handleDisconnectEvent}
+                onClose={() => setIsSettingsOpen(false)}
+              />
+            </div>
           </div>
         </div>
       )}

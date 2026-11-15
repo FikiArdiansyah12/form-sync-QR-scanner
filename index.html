@@ -13,6 +13,15 @@
   </head>
   <body class="bg-slate-50 text-slate-900 antialiased selection:bg-slate-200 selection:text-slate-900">
     <div id="root"></div>
+    <script>
+      window.addEventListener('unhandledrejection', function(event) {
+        console.warn('Recovered from unhandled background promise rejection:', event.reason);
+        event.preventDefault();
+      });
+      window.addEventListener('error', function(event) {
+        console.warn('Recovered from unhandled background script error:', event.message);
+      });
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

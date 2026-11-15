@@ -5,9 +5,10 @@
  */
 
 /**
- * Karakter aman (32 karakter) tanpa simbol ambigu 0, O, 1, I, L
+ * Karakter aman (32 karakter) selaras dengan Google Apps Script backend
+ * (bebas dari angka 0, 1 dan huruf O, I untuk mencegah kerancuan visual).
  */
-export const SAFE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+export const SAFE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 /**
  * Menghasilkan kode acara 8-digit acak dengan format standar XXXX-YYYY.
@@ -49,7 +50,8 @@ export function formatEventCodeWithHyphen(input: string): string {
 }
 
 /**
- * Memvalidasi apakah kode acara memenuhi format 8 karakter alfanumerik aman.
+ * Memvalidasi apakah kode acara memenuhi format 8 karakter alfanumerik.
+ * Mendukung seluruh karakter A-Z dan 0-9 yang dihasilkan oleh backend Google Apps Script.
  *
  * @param code - Kode acara yang akan divalidasi
  * @returns True jika valid, false jika format tidak sesuai
@@ -59,8 +61,7 @@ export function isValidEventCode(code: string): boolean {
   const clean = normalizeEventCode(code);
   if (clean.length !== 8) return false;
 
-  const validRegex = /^[2-9A-HJ-KM-NP-Z]{8}$/;
-  return validRegex.test(clean);
+  return /^[A-Z0-9]{8}$/.test(clean);
 }
 
 /**

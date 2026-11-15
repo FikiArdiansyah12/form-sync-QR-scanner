@@ -7,6 +7,12 @@ import {
   exportAttendeesToCsv,
   saveWebhookMapping,
   getWebhookForEvent,
+  removeWebhookMapping,
+  removeEventFromStorage,
+  isEventWorkspacePaired,
+  registerWorkspaceEvent,
+  saveEventToStorage,
+  deleteSessionFromEvent,
 } from "../src/core/storage";
 import { type WorkspaceEventConfig, type Attendee } from "../src/core/types";
 
@@ -182,5 +188,61 @@ describe("storage (Attendance Metrics & Check-In Silo)", () => {
 
     // Event yang belum pernah dipetakan harus mengembalikan null
     expect(getWebhookForEvent("NONEXISTENT")).toBeNull();
+  });
+
+  it("isEventWorkspacePaired harus memverifikasi apakah workspace sudah terpasang webhook valid", () => {
+    const code = "TEST-9999";
+    // Belum pernah dibuat
+    expect(isEventWorkspacePaired(code)).toBe(false);
+
+    // Dibuat tapi belum ada webhook
+    const ev = registerWorkspaceEvent(code);
+    saveEventToStorage(ev);
+    expect(isEventWorkspacePaired(code)).toBe(false);
+
+    // Ditambahkan webhook mati (AKfycby_4eb)
+    ev.spreadsheetWebhookUrl = "https://script.google.com/macros/s/AKfycby_4eb0VxAd6istXNWQ5-Bjs5NPTgW_WoolzbauQuwLJX40m4Ih/exec";
+    saveEventToStorage(ev);
+    expect(isEventWorkspacePaired(code)).toBe(false);
+
+    // Ditambahkan webhook aktif valid
+    ev.spreadsheetWebhookUrl = "https://script.google.com/macros/s/AKfycbxAu0QtKScozu4S9YyKbPaWXE7G4eZftizHydS_zKhu9SlAzrghsJCx40JUwBm5bd8FiQ/exec";
+    saveEventToStorage(ev);
+    expect(isEventWorkspacePaired(code)).toBe(true);
+  });
+
+  it("removeEventFromStorage dan removeWebhookMapping harus membersihkan seluruh data acara dari storage lokal", () => {
+    const code = "DEL-1234";
+    const wh = "https://script.google.com/macros/s/AKfycbxAu0QtKScozu4S9YyKbPaWXE7G4eZftizHydS_zKhu9SlAzrghsJCx40JUwBm5bd8FiQ/exec";
+
+    saveWebhookMapping(code, wh);
+    const ev = registerWorkspaceEvent(code);
+    ev.spreadsheetWebhookUrl = wh;
+    saveEventToStorage(ev);
+
+    expect(isEventWorkspacePaired(code)).toBe(true);
+
+    // Hapus acara
+    removeEventFromStorage(code);
+
+    expect(isEventWorkspacePaired(code)).toBe(false);
+    expect(getWebhookForEvent(code)).toBeNull();
+  });
+
+  it("deleteSessionFromEvent harus menghapus sesi berdasarkan ID maupun duplikat nama yang sama", () => {
+    const ev: WorkspaceEventConfig = {
+      ...testEvent,
+      sessions: [
+        { id: "apel_pagi", name: "APEL PAGI", type: "checkin", isActive: true },
+        { id: "sa", name: "sa", type: "checkin", isActive: true },
+        { id: "sess_duplicate_sa", name: "SA", type: "checkin", isActive: true },
+      ],
+      activeSessionId: "sa",
+    };
+
+    const updated = deleteSessionFromEvent(ev, "sa");
+    expect(updated.sessions.length).toBe(1);
+    expect(updated.sessions[0].name).toBe("APEL PAGI");
+    expect(updated.activeSessionId).toBe("apel_pagi");
   });
 });
