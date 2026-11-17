@@ -6,6 +6,7 @@ import {
   AlertCircle,
   Plus,
   X,
+  Trash2,
   Layers,
 } from "lucide-react";
 import {
@@ -109,24 +110,24 @@ export function GateScannerView({
 
   return (
     <div className="space-y-3.5 font-sans max-w-3xl mx-auto">
-      {/* 1. Header Bar: Judul & Status Kamera */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100">
-        <div className="flex items-center gap-2.5">
+      {/* 1. Header Bar: Judul & Status Kamera Responsif */}
+      <div className="flex items-start sm:items-center justify-between gap-2 pb-2.5 border-b border-slate-100">
+        <div className="flex items-center gap-2.5 min-w-0">
           <div className="w-8 h-8 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0 p-1 text-slate-800">
             <AttendanceLogo className="h-4.5 w-auto" />
           </div>
-          <div>
-            <h2 className="text-sm sm:text-base font-bold text-slate-900 tracking-tight">
+          <div className="min-w-0">
+            <h2 className="text-sm sm:text-base font-bold text-slate-900 tracking-tight leading-tight">
               Attendance &amp; QR Check-In
             </h2>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-slate-500 truncate">
               Validate tickets, manage checkpoints, and track real-time attendance
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 self-start sm:self-auto text-xs font-semibold text-emerald-600">
-          <span className="size-2 rounded-full bg-emerald-500 shrink-0" />
+        <div className="flex items-center gap-1.5 shrink-0 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200/80 text-[11px] font-semibold text-emerald-700">
+          <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
           <span>Camera Ready</span>
         </div>
       </div>
@@ -172,8 +173,139 @@ export function GateScannerView({
           </form>
         ) : (
           <div className="space-y-3 pt-1">
-            {/* Grid Kontrol Checkpoint Terstruktur */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {/* 1. Tampilan Desktop: Tabel Kontrol Checkpoint Terstruktur */}
+            <div className="hidden sm:block overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-2xs">
+              <table className="w-full text-left border-collapse min-w-[500px]">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                    <th className="py-2.5 px-3.5">Checkpoint Name</th>
+                    <th className="py-2.5 px-3">Type</th>
+                    <th className="py-2.5 px-3">Status</th>
+                    <th className="py-2.5 px-3">Scanner</th>
+                    <th className="py-2.5 px-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-[13px]">
+                  {sessions.map((sess) => {
+                    const isSelected = sess.id === currentSession?.id;
+                    const isActive = sess.isActive !== false;
+                    const isConfirmingDelete = confirmDeleteId === sess.id;
+
+                    return (
+                      <tr
+                        key={sess.id}
+                        className={`transition-colors ${
+                          isSelected ? "bg-slate-50/80 font-medium" : "hover:bg-slate-50/50"
+                        }`}
+                      >
+                        {/* 1. Nama Checkpoint */}
+                        <td className="py-2.5 px-3.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onSelectSession(sess.id);
+                              setLastResult(null);
+                            }}
+                            className="font-bold text-slate-900 hover:text-slate-700 cursor-pointer text-left truncate block max-w-[220px]"
+                            title={sess.name}
+                          >
+                            {sess.name}
+                          </button>
+                        </td>
+
+                        {/* 2. Type */}
+                        <td className="py-2.5 px-3">
+                          <span className="text-[10.5px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-700 uppercase">
+                            {sess.type === "redemption" ? "Claim" : "Gate"}
+                          </span>
+                        </td>
+
+                        {/* 3. Status Toggle */}
+                        <td className="py-2.5 px-3">
+                          {onToggleSession ? (
+                            <button
+                              type="button"
+                              onClick={() => onToggleSession(sess.id, !isActive)}
+                              className={`px-2 py-0.5 rounded-md text-[10.5px] font-semibold cursor-pointer border transition-colors ${
+                                isActive
+                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
+                                  : "bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200"
+                              }`}
+                              title={isActive ? "Click to Pause" : "Click to Activate"}
+                            >
+                              {isActive ? "Active" : "Paused"}
+                            </button>
+                          ) : (
+                            <span className="text-[10.5px] font-semibold text-slate-500">
+                              {isActive ? "Active" : "Paused"}
+                            </span>
+                          )}
+                        </td>
+
+                        {/* 4. Scanner Selection */}
+                        <td className="py-2.5 px-3">
+                          {isSelected ? (
+                            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-900">
+                              <span className="size-1.5 rounded-full bg-emerald-500" />
+                              <span>Current Active</span>
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onSelectSession(sess.id);
+                                setLastResult(null);
+                              }}
+                              className="text-[11px] font-semibold text-slate-500 hover:text-slate-900 px-2 py-0.5 rounded border border-slate-200 hover:bg-slate-100 cursor-pointer transition-colors"
+                            >
+                              Select
+                            </button>
+                          )}
+                        </td>
+
+                        {/* 5. Action: Trash Icon & Inline Confirm */}
+                        <td className="py-2.5 px-3 text-right">
+                          {isConfirmingDelete ? (
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onDeleteSession(sess.id);
+                                  setConfirmDeleteId(null);
+                                }}
+                                className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10.5px] cursor-pointer"
+                              >
+                                Delete
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteId(null)}
+                                className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[10.5px] cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteId(sess.id)}
+                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors inline-flex items-center justify-center"
+                              title="Delete Checkpoint"
+                              aria-label={`Delete ${sess.name}`}
+                            >
+                              <Trash2 className="size-3.5" />
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* 2. Tampilan Mobile: Clean Compact Cards (100% Fit Tanpa Terpotong & Tanpa Scroll Horizontal) */}
+            <div className="block sm:hidden space-y-2">
               {sessions.map((sess) => {
                 const isSelected = sess.id === currentSession?.id;
                 const isActive = sess.isActive !== false;
@@ -182,91 +314,108 @@ export function GateScannerView({
                 return (
                   <div
                     key={sess.id}
-                    className={`rounded-xl border p-2.5 transition-all flex flex-col justify-between gap-2 ${
+                    className={`p-3 rounded-xl border transition-all ${
                       isSelected
-                        ? "bg-slate-50 border-slate-900 shadow-2xs ring-1 ring-slate-900/10"
-                        : "bg-white border-slate-200 hover:border-slate-300"
+                        ? "bg-slate-50/90 border-slate-900 shadow-2xs ring-1 ring-slate-900/10"
+                        : "bg-white border-slate-200"
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-2 min-w-0">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onSelectSession(sess.id);
-                          setLastResult(null);
-                        }}
-                        className="text-left font-bold text-[13px] text-slate-900 hover:text-slate-700 truncate cursor-pointer flex-1"
-                      >
-                        {sess.name}
-                      </button>
-
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {/* Toggle Status Aktif / Paused */}
-                        {onToggleSession && (
-                          <button
-                            type="button"
-                            onClick={() => onToggleSession(sess.id, !isActive)}
-                            className={`px-2 py-0.5 rounded-md text-[10.5px] font-semibold cursor-pointer border transition-colors ${
-                              isActive
-                                ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
-                                : "bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200"
-                            }`}
-                            title={isActive ? "Click to Pause" : "Click to Activate"}
-                          >
-                            {isActive ? "Active" : "Paused"}
-                          </button>
-                        )}
-
-                        <span className="text-[10.5px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 uppercase">
+                    {/* Baris Atas: Nama, Kategori, dan Tombol Hapus Tong Sampah */}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onSelectSession(sess.id);
+                            setLastResult(null);
+                          }}
+                          className="font-bold text-[13.5px] text-slate-900 truncate hover:text-slate-700 text-left"
+                          title={sess.name}
+                        >
+                          {sess.name}
+                        </button>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-600 uppercase shrink-0">
                           {sess.type === "redemption" ? "Claim" : "Gate"}
                         </span>
                       </div>
+
+                      {/* Tombol Hapus Tong Sampah */}
+                      <div className="shrink-0">
+                        {isConfirmingDelete ? (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onDeleteSession(sess.id);
+                                setConfirmDeleteId(null);
+                              }}
+                              className="px-2 py-1 rounded bg-rose-600 text-white font-bold text-[10.5px] cursor-pointer"
+                            >
+                              Delete
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteId(null)}
+                              className="px-1.5 py-1 rounded bg-slate-200 text-slate-700 text-[10.5px] cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteId(sess.id)}
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors inline-flex items-center justify-center"
+                            title="Delete Checkpoint"
+                            aria-label={`Delete ${sess.name}`}
+                          >
+                            <Trash2 className="size-4" />
+                          </button>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-[11px] text-slate-500">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onSelectSession(sess.id);
-                          setLastResult(null);
-                        }}
-                        className={`font-semibold cursor-pointer ${
-                          isSelected ? "text-slate-900 font-bold" : "text-slate-500 hover:text-slate-800"
-                        }`}
-                      >
-                        {isSelected ? "Current Active Scanner" : "Select for Scanning"}
-                      </button>
+                    {/* Baris Bawah: Status Sakelar & Seleksi Scanner */}
+                    <div className="flex items-center justify-between pt-2 mt-1 border-t border-slate-100 text-xs">
+                      <div>
+                        {onToggleSession ? (
+                          <button
+                            type="button"
+                            onClick={() => onToggleSession(sess.id, !isActive)}
+                            className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-colors cursor-pointer ${
+                              isActive
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                : "bg-slate-100 text-slate-500 border-slate-200"
+                            }`}
+                          >
+                            {isActive ? "Active" : "Paused"}
+                          </button>
+                        ) : (
+                          <span className="text-[11px] font-semibold text-slate-500">
+                            {isActive ? "Active" : "Paused"}
+                          </span>
+                        )}
+                      </div>
 
-                      {isConfirmingDelete ? (
-                        <div className="flex items-center gap-1">
+                      <div>
+                        {isSelected ? (
+                          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-900 bg-emerald-50 border border-emerald-200/80 px-2.5 py-1 rounded-md">
+                            <span className="size-1.5 rounded-full bg-emerald-500 shrink-0" />
+                            <span className="whitespace-nowrap">Current Active</span>
+                          </span>
+                        ) : (
                           <button
                             type="button"
                             onClick={() => {
-                              onDeleteSession(sess.id);
-                              setConfirmDeleteId(null);
+                              onSelectSession(sess.id);
+                              setLastResult(null);
                             }}
-                            className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10.5px] cursor-pointer"
+                            className="text-[11px] font-semibold text-slate-700 hover:text-slate-900 px-3 py-1 rounded-md border border-slate-200 bg-white hover:bg-slate-50 shadow-2xs cursor-pointer"
                           >
-                            Confirm Delete
+                            Select Scanner
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => setConfirmDeleteId(null)}
-                            className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[10.5px] cursor-pointer"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setConfirmDeleteId(sess.id)}
-                          className="text-slate-400 hover:text-rose-600 p-1 rounded cursor-pointer transition-colors"
-                          title="Delete Checkpoint"
-                        >
-                          <X className="size-3.5" />
-                        </button>
-                      )}
+                        )}
+                      </div>
                     </div>
                   </div>
                 );

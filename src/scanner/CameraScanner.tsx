@@ -10,6 +10,8 @@ export interface CameraScannerProps {
  * Komponen Kamera WebRTC Scanner responsif mobile-first.
  * 1:1 identik dengan antarmuka resmi screenshot Google Sheets dialog:
  * - State 'Camera Permission Required' berlatar dashed border bersih dengan tombol 'Try Camera Again' dan 'Switch to Manual Search'.
+ * - Elemen <video> selalu terpasang di DOM agar videoRef tidak null saat izin kamera disetujui.
+ * - Dilengkapi reaktif stream attachment hook, autoPlay, playsInline, dan muted.
  * - Bebas emoticon dan bebas icon circular reload.
  */
 export function CameraScanner({
@@ -38,14 +40,24 @@ export function CameraScanner({
       }
 
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
         audio: false,
       });
 
       streamRef.current = stream;
+
+      // Pasang stream langsung jika video element sudah tersedia di DOM
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+        try {
+          await videoRef.current.play();
+        } catch {
+          // Browser autoplay policy catch
+        }
       }
 
       setHasPermission(true);
@@ -95,6 +107,16 @@ export function CameraScanner({
       setIsScanning(false);
     }
   };
+
+  // Reaktif Stream Attachment Hook: Memastikan stream selalu terpasang ke video element
+  useEffect(() => {
+    if (hasPermission && videoRef.current && streamRef.current) {
+      if (videoRef.current.srcObject !== streamRef.current) {
+        videoRef.current.srcObject = streamRef.current;
+      }
+      videoRef.current.play().catch(() => {});
+    }
+  }, [hasPermission]);
 
   useEffect(() => {
     startCamera();
@@ -149,30 +171,29 @@ export function CameraScanner({
         </div>
       )}
 
-      {/* Kasus 2: Kamera Aktif dan Siap Scan */}
-      {hasPermission === true && (
-        <div className="w-full flex flex-col items-center">
-          <div className="relative w-full aspect-square max-h-[340px] rounded-2xl overflow-hidden border border-slate-300 bg-slate-950 flex items-center justify-center shadow-inner">
-            <video
-              ref={videoRef}
-              playsInline
-              muted
-              className="w-full h-full object-cover"
-            />
+      {/* Kasus 2: Kamera Aktif dan Siap Scan (Selalu berada di DOM agar videoRef siap menerima stream) */}
+      <div className={`w-full flex flex-col items-center ${hasPermission === true ? "block" : "hidden"}`}>
+        <div className="relative w-full aspect-[4/3] sm:aspect-square max-h-[290px] sm:max-h-[340px] rounded-2xl overflow-hidden border border-slate-300 bg-slate-950 flex items-center justify-center shadow-inner">
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className="w-full h-full object-cover"
+          />
 
-            {/* Target Reticle Frame Kotak Pemindai */}
-            <div className="absolute inset-10 border-2 border-emerald-500 rounded-xl pointer-events-none flex items-center justify-center">
-              <span className="text-[11px] font-mono text-emerald-300 bg-slate-950/80 px-2 py-0.5 rounded border border-emerald-500/40">
-                Align QR Code
-              </span>
-            </div>
+          {/* Target Reticle Frame Kotak Pemindai Responsif (Monokromatik Netral - Sleek Dark Viewfinder) */}
+          <div className="absolute inset-5 sm:inset-10 border-2 border-white/80 rounded-xl pointer-events-none flex items-center justify-center shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]">
+            <span className="absolute bottom-3 text-xs font-mono font-medium text-slate-100 bg-slate-950/85 px-3 py-1 rounded-md border border-slate-700/80 backdrop-blur-xs tracking-wider">
+              Align QR Code
+            </span>
           </div>
-
-          <p className="text-xs text-slate-500 mt-3 text-center">
-            Point camera directly at attendee QR ticket for instant validation.
-          </p>
         </div>
-      )}
+
+        <p className="text-xs text-slate-500 mt-2.5 text-center">
+          Point camera directly at attendee QR ticket for instant validation.
+        </p>
+      </div>
     </div>
   );
 }
